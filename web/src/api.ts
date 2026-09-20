@@ -95,3 +95,72 @@ export async function postUpdateDownload(): Promise<DownloadResult> {
   const res = await check(await fetch('/api/update/download', { method: 'POST' }))
   return (await res.json()) as DownloadResult
 }
+
+export interface Provider {
+  id: string
+  display_name: string
+  implemented: boolean
+}
+
+export interface Account {
+  id: string
+  provider: string
+  label: string
+  identity: string
+  enabled: boolean
+  connected: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateAccountRequest {
+  provider: string
+  label: string
+  identity?: string
+  enabled?: boolean
+}
+
+export interface UpdateAccountRequest {
+  label?: string
+  identity?: string
+  enabled?: boolean
+}
+
+export async function fetchProviders(): Promise<Provider[]> {
+  const res = await check(await fetch('/api/providers'))
+  const body = (await res.json()) as { providers: Provider[] }
+  return body.providers ?? []
+}
+
+export async function fetchAccounts(): Promise<Account[]> {
+  const res = await check(await fetch('/api/accounts'))
+  const body = (await res.json()) as { accounts: Account[] }
+  return body.accounts ?? []
+}
+
+export async function createAccount(req: CreateAccountRequest): Promise<Account> {
+  const res = await check(
+    await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  )
+  return (await res.json()) as Account
+}
+
+export async function updateAccount(id: string, req: UpdateAccountRequest): Promise<Account> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  )
+  return (await res.json()) as Account
+}
+
+export async function deleteAccount(id: string): Promise<void> {
+  const res = await fetch(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (res.status !== 204) await check(res)
+}

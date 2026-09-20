@@ -11,11 +11,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/control"
 	"github.com/dustincorder/ai-lb/internal/db"
 	"github.com/dustincorder/ai-lb/internal/gateway"
+	"github.com/dustincorder/ai-lb/internal/providers"
 )
 
 // shutdownTimeout bounds graceful drain of both HTTP servers.
@@ -69,7 +71,14 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 			config.Addr(settings.GatewayHost, settings.GatewayPort), err)
 	}
 
-	a.controlRoutes = control.New(database, a.currentSettings, build.Current())
+	registry := providers.Default()
+	a.controlRoutes = control.New(
+		database,
+		a.currentSettings,
+		build.Current(),
+		accounts.NewService(registry, accounts.NewRepository(database.Conn)),
+		registry,
+	)
 	a.control = &http.Server{
 		Handler:           a.controlRoutes,
 		ReadHeaderTimeout: 5 * time.Second,

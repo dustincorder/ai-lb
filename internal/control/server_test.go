@@ -13,11 +13,23 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
+	"github.com/dustincorder/ai-lb/internal/providers"
 	"github.com/dustincorder/ai-lb/internal/db"
 	"github.com/dustincorder/ai-lb/internal/update"
 )
+
+func testServerWith(database *db.DB, active func() config.Settings) *Server {
+	return New(
+		database,
+		active,
+		build.Info{Version: "test", Channel: "dev"},
+		accounts.NewService(providers.Default(), accounts.NewRepository(database.Conn)),
+		providers.Default(),
+	)
+}
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
@@ -31,7 +43,7 @@ func testServer(t *testing.T) *Server {
 		t.Fatalf("LoadSettings: %v", err)
 	}
 	current := settings
-	return New(database, func() config.Settings { return current }, build.Info{Version: "test", Channel: "dev"})
+	return testServerWith(database, func() config.Settings { return current })
 }
 
 // divergentServer returns a control server whose ACTIVE settings differ
@@ -54,7 +66,7 @@ func divergentServer(t *testing.T) (*Server, config.Settings, config.Settings) {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	active := config.Defaults()
-	return New(database, func() config.Settings { return active }, build.Info{Version: "test", Channel: "dev"}), configured, active
+	return testServerWith(database, func() config.Settings { return active }), configured, active
 }
 
 func getJSON(t *testing.T, url string) (int, map[string]any) {

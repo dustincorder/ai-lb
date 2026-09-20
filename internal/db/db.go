@@ -27,6 +27,10 @@ func init() {
 // schemaMigrations are applied exactly once each, in order.
 // user_version tracks how many have been applied. Add new statements by
 // appending; never edit an applied migration in place.
+//
+// Entries 1–2 are the foundation (settings, app_metadata); entries 3–5
+// form the accounts schema change (table plus its two indexes). Later
+// entries keep appending the same way.
 var schemaMigrations = []string{
 	`CREATE TABLE settings (
 		key   TEXT PRIMARY KEY,
@@ -36,6 +40,22 @@ var schemaMigrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+	// Migration 3: account profiles. Provider stays an open string on
+	// purpose — no CHECK(provider IN (...)): new providers must not
+	// require a schema migration. credentials_ref is empty until an
+	// auth flow stores a secret; it is never set through the public API.
+	`CREATE TABLE accounts (
+		id              TEXT PRIMARY KEY,
+		provider        TEXT NOT NULL,
+		label           TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 200),
+		identity        TEXT NOT NULL DEFAULT '',
+		enabled         INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+		credentials_ref TEXT NOT NULL DEFAULT '',
+		created_at      TEXT NOT NULL,
+		updated_at      TEXT NOT NULL
+	)`,
+	`CREATE INDEX idx_accounts_provider ON accounts(provider)`,
+	`CREATE INDEX idx_accounts_enabled ON accounts(enabled)`,
 }
 
 // schemaVersion is the number of migrations this binary knows.
@@ -198,7 +218,7 @@ func (d *DB) validate() error {
 	if fk != 1 {
 		return fmt.Errorf("foreign_keys pragma is off")
 	}
-	for _, table := range []string{"settings", "app_metadata"} {
+	for _, table := range []string{"settings", "app_metadata", "accounts"} {
 		var name string
 		err := d.Conn.QueryRow(
 			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table,

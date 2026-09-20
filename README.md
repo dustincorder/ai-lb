@@ -39,14 +39,18 @@ Implemented:
 - Control server (`http://127.0.0.1:8317` by default): web UI + management API
 - Gateway listener (`http://127.0.0.1:8318` by default, `GET /health` only)
 - SQLite settings (auto-created, migrated, validated; ports editable in the UI)
+- Provider registry (`codex`, `antigravity`; both report not-implemented)
+- Account profile CRUD via API and Accounts UI (local profiles with labels)
+- SecretStore abstraction with a fail-closed production placeholder
 
 Not implemented:
 
-- Codex integration
-- Antigravity integration
-- Routing / load balancing
+- Real provider authentication (accounts created now are local profiles
+  only and are not authenticated with Codex or Antigravity yet)
+- Credential import, OAuth, or login flows
 - Quota tracking
 - CLI switching
+- Routing / load balancing
 - OpenAI-compatible endpoints
 - API access manager (clients, keys, policies)
 
@@ -168,8 +172,8 @@ See [SECURITY.md](SECURITY.md) for the full policy, including private vulnerabil
 
 ## Project status
 
-- Foundation: Go service (`cmd/ai-lb`, `internal/…`), React web UI (`web/`), SQLite settings.
-- Docs: `ARCHITECTURE.md`, `docs/RFC-0001-v0.1.md` (provider/routing design is future direction).
+- Foundation: Go service (`cmd/ai-lb`, `internal/…`), React web UI (`web/`), SQLite settings + account profiles.
+- Docs: `ARCHITECTURE.md`, `docs/RFC-0001-v0.1.md` (provider auth/routing design is future direction).
 - Legal/scaffold: `LICENSE` (PolyForm Noncommercial 1.0.0), `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `.gitignore`, `.editorconfig`, PR template.
 - No provider integrations, no releases, no changelog yet.
 
