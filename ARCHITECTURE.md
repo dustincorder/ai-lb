@@ -13,6 +13,58 @@ access management.
 Accounts -> ai-lb -> OpenAI-compatible API -> any compatible client
 ```
 
+> **Runtime update (implemented foundation).** The desktop/Tauri selection
+> in §9 and RFC §5–§7 is superseded: ai-lb now runs as a **Go local
+> service with a browser-based web UI** (React + TypeScript + Vite build
+> embedded in the binary, SQLite for settings). The rest of this document
+> — provider abstraction, data/security model, access management,
+> routing invariants — stands as future direction, not implementation.
+
+## 0. Runtime foundation (current)
+
+```text
+Browser UI
+    ↓  (same-origin management API)
+Go Control Server  →  ai-lb Core (settings, SQLite, future adapters)
+
+OpenAI clients
+    ↓  (future OpenAI-compatible routes; today GET /health only)
+Go Gateway Server  →  ai-lb Core
+```
+
+- One `ai-lb` executable, no Node.js runtime on the user machine.
+- Control plane (UI + management API) and gateway/data plane are separate
+  listeners (`127.0.0.1:8317` / `127.0.0.1:8318` by default, configurable,
+  loopback-only). No `0.0.0.0`, LAN, remote, or tunnel modes exist.
+- Future design allows one ai-lb API key to use both provider pools:
+
+```text
+Codex accounts ─┐
+                ├─→ common router → gateway response
+Antigravity ────┘
+```
+
+  allowed only where request/model capabilities match the account pool.
+  Not implemented; documented so the foundation does not block it.
+
+### Future routing requirements (documented, not built)
+
+- Automatic account failover on exhausted quota.
+- Optional cross-provider routing.
+- Session/conversation affinity (stable identifiers only; no prompt
+  history stored for affinity).
+- Capability-based routing (model/request capabilities vs pool).
+- Image input where the upstream model supports it.
+- System/developer instructions where supported.
+- Future video capability tracked without promising v0.1 video support.
+
+### Future User Portal (concept, not built)
+
+- **Admin UI** (this foundation's UI grows into it): accounts, routing,
+  quotas, API clients, policies, settings.
+- **User Portal** (future, separate surface): own usage, remaining limits,
+  allowed models, API endpoint, key status.
+
 ## 1. Product scope (v0.1)
 
 Four logical parts, one desktop app:
@@ -143,16 +195,24 @@ credential locations and quota mappings are discovered at implementation time).
 
 ## 9. Process model
 
-One desktop process for v0.1: GUI webview, core services, gateway HTTP server,
-quota refresher, and process manager all in-process. Closing the window
-minimizes to tray; the process (and gateway) keeps running until quit. No
-sidecar, daemon, or service — that complexity is deferred until a headless /
-background use case forces it.
+> Superseded for the foundation: no desktop shell or webview is used.
+> The service is a Go process (control + gateway listeners) managed by
+> the user (foreground process; autostart/headless is a maintainer
+> decision tracked in the RFC). The single-process, tray-equivalent goal
+> carries over: the backend lives fully without any open browser window.
 
-Selected stack (argued in the RFC): **Tauri 2 + Rust core + TypeScript web
-frontend** — small footprint, Rust-native gateway/adapters/secret-store,
-first-class tray/autostart/packaging, and the same shape as the closest
-local-first reference.
+Original desktop-process design (kept for context, not current): GUI
+webview, core services, gateway HTTP server, quota refresher, and process
+manager all in-process. Closing the window minimizes to tray; the process
+(and gateway) keeps running until quit. No sidecar, daemon, or service —
+that complexity is deferred until a headless / background use case forces
+it.
+
+Superseded stack selection (kept for context, not current): **Tauri 2 +
+Rust core + TypeScript web frontend** — small footprint, Rust-native
+gateway/adapters/secret-store, first-class tray/autostart/packaging, and
+the same shape as the closest local-first reference. Replaced by the Go
+service foundation in §0.
 
 ## 10. Explicit non-goals for v0.1
 
