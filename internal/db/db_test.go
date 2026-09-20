@@ -153,6 +153,133 @@ func TestFutureSchemaFailsClosed(t *testing.T) {
 	}
 }
 
+// TestFutureSchemaUntouched verifies the fail-closed ordering: a rejected
+// future-schema database keeps its schema version and journal mode —
+// Open must not enable WAL, migrate, or seed before refusing.
+func TestFutureSchemaUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ai-lb.db")
+	raw, err := sql.Open("ailb_sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := raw.Exec(schemaMigrations[0]); err != nil {
+		t.Fatalf("apply v1: %v", err)
+	}
+	if _, err := raw.Exec("PRAGMA user_version = 999"); err != nil {
+		t.Fatalf("stamp future: %v", err)
+	}
+	var beforeMode string
+	if err := raw.QueryRow("PRAGMA journal_mode").Scan(&beforeMode); err != nil {
+		t.Fatalf("journal_mode: %v", err)
+	}
+	raw.Close()
+
+	if _, err := Open(dir); err == nil {
+		t.Fatal("Open should fail closed on a newer-than-binary schema")
+	}
+
+	after, err := sql.Open("ailb_sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("raw reopen: %v", err)
+	}
+	defer after.Close()
+	var version int
+	if err := after.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("user_version: %v", err)
+	}
+	if version != 999 {
+		t.Errorf("user_version changed to %d, want untouched 999", version)
+	}
+	var mode string
+	if err := after.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("journal_mode: %v", err)
+	}
+	if mode != beforeMode {
+		t.Errorf("journal mode changed to %q, want untouched %q", mode, beforeMode)
+	}
+}
+
+// writeRawSetting bypasses SaveSettings validation to simulate
+// externally corrupted persisted values.
+func writeRawSetting(t *testing.T, dir, key, value string) {
+	t.Helper()
+	raw, err := sql.Open("ailb_sqlite", "file:"+filepath.Join(dir, "ai-lb.db"))
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(
+		"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+		key, value); err != nil {
+		t.Fatalf("raw write %q: %v", key, err)
+	}
+}
+
+func TestStrictPersistedSettingsParsing(t *testing.T) {
+	newDB := func(t *testing.T) (string, *DB) {
+		t.Helper()
+		dir := t.TempDir()
+		d, err := Open(dir)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		return dir, d
+	}
+
+	t.Run("malformed control_port fails", func(t *testing.T) {
+		dir, d := newDB(t)
+		defer d.Close()
+		writeRawSetting(t, dir, "control_port", "banana")
+		if _, err := d.LoadSettings(); err == nil {
+			t.Error("malformed control_port should fail closed")
+		}
+	})
+
+	t.Run("out-of-range gateway_port fails", func(t *testing.T) {
+		dir, d := newDB(t)
+		defer d.Close()
+		writeRawSetting(t, dir, "gateway_port", "999999999999999")
+		if _, err := d.LoadSettings(); err == nil {
+			t.Error("out-of-range gateway_port should fail closed")
+		}
+	})
+
+	t.Run("missing key uses default", func(t *testing.T) {
+		dir, d := newDB(t)
+		defer d.Close()
+		raw, err := sql.Open("ailb_sqlite", "file:"+filepath.Join(dir, "ai-lb.db"))
+		if err != nil {
+			t.Fatalf("raw open: %v", err)
+		}
+		if _, err := raw.Exec("DELETE FROM settings WHERE key='gateway_port'"); err != nil {
+			t.Fatalf("delete key: %v", err)
+		}
+		raw.Close()
+		got, err := d.LoadSettings()
+		if err != nil {
+			t.Fatalf("LoadSettings: %v", err)
+		}
+		if got.GatewayPort != config.Defaults().GatewayPort {
+			t.Errorf("missing gateway_port should default to %d, got %d",
+				config.Defaults().GatewayPort, got.GatewayPort)
+		}
+	})
+
+	t.Run("valid stored value is used", func(t *testing.T) {
+		dir, d := newDB(t)
+		defer d.Close()
+		writeRawSetting(t, dir, "control_port", "8481")
+		got, err := d.LoadSettings()
+		if err != nil {
+			t.Fatalf("LoadSettings: %v", err)
+		}
+		if got.ControlPort != 8481 {
+			t.Errorf("stored control_port should be 8481, got %d", got.ControlPort)
+		}
+	})
+}
+
 func TestSettingsPersistence(t *testing.T) {
 	dir := t.TempDir()
 	d, err := Open(dir)

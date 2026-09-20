@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"modernc.org/sqlite"
@@ -77,14 +78,15 @@ func DefaultDir() (string, error) {
 }
 
 // Open creates the data directory if needed, opens (or creates) the
-// database file, enables foreign keys, runs migrations, and validates
-// the result. Only settings/app_metadata schema exists at this stage.
+// database file, and prepares it in a fail-closed order: the schema
+// version is inspected before any mutation (WAL, migrations, seeding),
+// so a database from a newer ai-lb is rejected untouched.
 func Open(dir string) (*DB, error) {
 	if dir == "" {
-		var err error
-		dir, err = DefaultDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve data dir: %w", err)
+		var derr error
+		dir, derr = DefaultDir()
+		if derr != nil {
+			return nil, fmt.Errorf("resolve data dir: %w", derr)
 		}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -96,6 +98,18 @@ func Open(dir string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	d := &DB{Conn: conn, Path: path}
+	// Read-only inspection first: no WAL, migration, or seed write may
+	// touch a database this binary does not understand.
+	version, verr := d.currentVersion()
+	if verr != nil {
+		conn.Close()
+		return nil, verr
+	}
+	if version > schemaVersion() {
+		conn.Close()
+		return nil, fmt.Errorf("database schema version %d is newer than this binary supports (%d); refusing to open",
+			version, schemaVersion())
+	}
 	if err := d.enableWAL(); err != nil {
 		conn.Close()
 		return nil, err
@@ -222,8 +236,10 @@ func (d *DB) seedDefaults() error {
 	return nil
 }
 
-// LoadSettings reads settings from the database, falling back to defaults
-// for missing keys.
+// LoadSettings reads settings from the database. Missing keys fall back
+// to defaults; present keys must parse strictly (strconv) and the merged
+// record must validate — malformed persisted values fail closed instead
+// of silently becoming defaults.
 func (d *DB) LoadSettings() (config.Settings, error) {
 	s := config.Defaults()
 	rows, err := d.Conn.Query("SELECT key, value FROM settings")
@@ -246,18 +262,40 @@ func (d *DB) LoadSettings() (config.Settings, error) {
 		s.ControlHost = v
 	}
 	if v, ok := values["control_port"]; ok {
-		s.ControlPort = atoi(v, s.ControlPort)
+		n, err := parsePortValue("control_port", v)
+		if err != nil {
+			return s, err
+		}
+		s.ControlPort = n
 	}
 	if v, ok := values["gateway_host"]; ok {
 		s.GatewayHost = v
 	}
 	if v, ok := values["gateway_port"]; ok {
-		s.GatewayPort = atoi(v, s.GatewayPort)
+		n, err := parsePortValue("gateway_port", v)
+		if err != nil {
+			return s, err
+		}
+		s.GatewayPort = n
 	}
 	if err := config.Validate(s); err != nil {
 		return s, fmt.Errorf("stored settings invalid: %w", err)
 	}
 	return s, nil
+}
+
+// parsePortValue strictly parses a persisted port: full-string decimal
+// integer, no fallback. Out-of-range values (including huge ones that
+// overflow int) are errors.
+func parsePortValue(key, raw string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("setting %q has malformed port %q", key, raw)
+	}
+	if err := config.ValidatePort(n); err != nil {
+		return 0, fmt.Errorf("setting %q: %w", key, err)
+	}
+	return n, nil
 }
 
 // SaveSettings validates and persists the full settings record.
@@ -294,13 +332,5 @@ func (d *DB) Status() map[string]string {
 }
 
 func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
-}
-
-func atoi(s string, fallback int) int {
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return fallback
-	}
-	return n
+	return strconv.Itoa(n)
 }
