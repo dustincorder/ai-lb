@@ -27,6 +27,10 @@ func init() {
 // schemaMigrations are applied exactly once each, in order.
 // user_version tracks how many have been applied. Add new statements by
 // appending; never edit an applied migration in place.
+//
+// Entries 1–2 are the foundation (settings, app_metadata); entries 3–5
+// form the accounts schema change (table plus its two indexes). Later
+// entries keep appending the same way.
 var schemaMigrations = []string{
 	`CREATE TABLE settings (
 		key   TEXT PRIMARY KEY,

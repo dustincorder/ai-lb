@@ -20,11 +20,18 @@ func NewMemoryStore() *MemoryStore {
 }
 
 // Put stores a copy of secret under ref, replacing any previous value.
+// A replaced slice is zeroed best-effort, like on Delete. No
+// cryptographic guarantee is claimed for either operation.
 func (m *MemoryStore) Put(_ context.Context, ref string, secret []byte) error {
 	cp := make([]byte, len(secret))
 	copy(cp, secret)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if old, ok := m.data[ref]; ok {
+		for i := range old {
+			old[i] = 0
+		}
+	}
 	m.data[ref] = cp
 	return nil
 }

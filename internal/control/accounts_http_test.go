@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dustincorder/ai-lb/internal/accounts"
 )
 
 func doJSON(t *testing.T, method, url, payload string) (int, map[string]any) {
@@ -194,5 +197,72 @@ func TestAccountResponsesNeverLeakSecrets(t *testing.T) {
 	raw, _ = json.Marshal(list)
 	if strings.Contains(strings.ToLower(string(raw)), "credentials_ref") {
 		t.Errorf("list leaks credentials_ref: %s", raw)
+	}
+}
+
+func TestTrailingJSONRejected(t *testing.T) {
+	srv := httptest.NewServer(testServer(t))
+	defer srv.Close()
+
+	code, body := doJSON(t, http.MethodPost, srv.URL+"/api/accounts",
+		`{"provider":"codex","label":"x"} {"enabled":false}`)
+	if code != http.StatusBadRequest || body["error"] != "invalid_json" {
+		t.Errorf("second JSON document must be rejected: %d %v", code, body)
+	}
+
+	code, created := doJSON(t, http.MethodPost, srv.URL+"/api/accounts",
+		`{"provider":"codex","label":"x"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("setup create: %d %v", code, created)
+	}
+	id := created["id"].(string)
+	code, body = doJSON(t, http.MethodPatch, srv.URL+"/api/accounts/"+id,
+		`{"label":"y"} trailing-garbage`)
+	if code != http.StatusBadRequest || body["error"] != "invalid_json" {
+		t.Errorf("trailing garbage must be rejected: %d %v", code, body)
+	}
+}
+
+func TestEmptyPatchRejected(t *testing.T) {
+	srv := httptest.NewServer(testServer(t))
+	defer srv.Close()
+
+	code, created := doJSON(t, http.MethodPost, srv.URL+"/api/accounts",
+		`{"provider":"codex","label":"x"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("setup create: %d %v", code, created)
+	}
+	id := created["id"].(string)
+	code, body := doJSON(t, http.MethodPatch, srv.URL+"/api/accounts/"+id, `{}`)
+	if code != http.StatusUnprocessableEntity || body["error"] != "invalid_patch" {
+		t.Errorf("empty PATCH must be 422 invalid_patch: %d %v", code, body)
+	}
+}
+
+func TestConnectedDeleteRefusedOverHTTP(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+
+	code, created := doJSON(t, http.MethodPost, srv.URL+"/api/accounts",
+		`{"provider":"codex","label":"linked"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("setup create: %d %v", code, created)
+	}
+	id := created["id"].(string)
+
+	// Simulate the future auth layer linking a secret server-side.
+	repo := accounts.NewRepository(s.DB.Conn)
+	if err := repo.SetCredentialsRef(t.Context(), id, "codex:test:oauth", time.Now().UTC()); err != nil {
+		t.Fatalf("link credentials: %v", err)
+	}
+
+	code, body := doJSON(t, http.MethodDelete, srv.URL+"/api/accounts/"+id, "")
+	if code != http.StatusConflict || body["error"] != "account_connected" {
+		t.Errorf("connected delete must be 409 account_connected: %d %v", code, body)
+	}
+	// Row must remain readable.
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/accounts/"+id, ""); code != http.StatusOK {
+		t.Errorf("connected row must survive refused delete, GET = %d", code)
 	}
 }

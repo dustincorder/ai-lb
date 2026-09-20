@@ -13,16 +13,19 @@ import (
 
 // Service orchestrates account profiles: provider validation, input
 // validation, ID generation, and timestamps. HTTP handlers translate
-// payloads and errors only; all rules live here.
+// payloads and errors only; all rules live here. The repository and
+// registry are intentionally private: external packages must go through
+// the service so business rules cannot be bypassed.
 type Service struct {
-	Registry *providers.Registry
-	Repo     *Repository
-	Now      func() time.Time
+	registry *providers.Registry
+	repo     *Repository
+	// Now is a test hook for deterministic timestamps.
+	Now func() time.Time
 }
 
 // NewService builds an account service. A nil Now defaults to UTC time.
 func NewService(registry *providers.Registry, repo *Repository) *Service {
-	return &Service{Registry: registry, Repo: repo, Now: func() time.Time {
+	return &Service{registry: registry, repo: repo, Now: func() time.Time {
 		return time.Now().UTC()
 	}}
 }
@@ -54,7 +57,7 @@ func (e *ValidationError) Error() string { return e.Message }
 
 // Create validates, stamps, and stores a new unconnected profile.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Account, error) {
-	if !s.Registry.Known(in.Provider) {
+	if !s.registry.Known(in.Provider) {
 		return Account{}, &ValidationError{Field: "provider", Message: providers.ErrUnknownProvider(in.Provider).Error()}
 	}
 	label, err := cleanLabel(in.Label)
@@ -79,7 +82,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Account, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	created, err := s.Repo.Create(ctx, a)
+	created, err := s.repo.Create(ctx, a)
 	if err != nil {
 		return Account{}, err
 	}
@@ -88,8 +91,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Account, error) {
 
 // Update applies an explicit patch to mutable fields only. Provider, ID,
 // timestamps, and credentials_ref are never patchable through this path.
+// An empty patch (nothing to change) is rejected without touching the
+// row: silently bumping updated_at would be a fictitious mutation.
 func (s *Service) Update(ctx context.Context, id string, p Patch) (Account, error) {
-	a, err := s.Repo.Get(ctx, id)
+	if p.Label == nil && p.Identity == nil && p.Enabled == nil {
+		return Account{}, &ValidationError{Field: "patch", Message: "empty patch changes nothing"}
+	}
+	a, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return Account{}, err
 	}
@@ -111,7 +119,7 @@ func (s *Service) Update(ctx context.Context, id string, p Patch) (Account, erro
 		a.Enabled = *p.Enabled
 	}
 	a.UpdatedAt = s.Now().UTC()
-	updated, err := s.Repo.Update(ctx, a)
+	updated, err := s.repo.Update(ctx, a)
 	if err != nil {
 		return Account{}, err
 	}
@@ -120,20 +128,29 @@ func (s *Service) Update(ctx context.Context, id string, p Patch) (Account, erro
 
 // Get returns one profile or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id string) (Account, error) {
-	return s.Repo.Get(ctx, id)
+	return s.repo.Get(ctx, id)
 }
 
 // List returns all profiles.
 func (s *Service) List(ctx context.Context) ([]Account, error) {
-	return s.Repo.List(ctx)
+	return s.repo.List(ctx)
 }
 
-// Delete removes the metadata row for an unconnected profile. When real
-// secret persistence exists, this method will orchestrate credential
-// deletion/reconciliation first; SQLite and SecretStore deletes are not
-// atomic and are not presented as such.
+// Delete removes the metadata row of an unconnected profile. A connected
+// profile (credentials_ref set) is refused with ErrConnected: deleting
+// metadata while leaving a credential reference/secret orphaned would be
+// a silent data loss. When real secret persistence arrives, this method
+// will orchestrate credential deletion/reconciliation first; SQLite and
+// SecretStore deletes are not atomic and are not presented as such.
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.Repo.Delete(ctx, id)
+	a, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if a.Connected() {
+		return ErrConnected
+	}
+	return s.repo.Delete(ctx, id)
 }
 
 func cleanLabel(raw string) (string, error) {

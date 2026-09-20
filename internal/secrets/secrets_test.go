@@ -76,3 +76,21 @@ func TestUnavailableStore(t *testing.T) {
 		t.Errorf("Delete = %v, want ErrUnavailable", err)
 	}
 }
+
+func TestMemoryStoreReplace(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	if err := m.Put(ctx, "ref", []byte("old-secret")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := m.Put(ctx, "ref", []byte("new-secret")); err != nil {
+		t.Fatalf("replace Put: %v", err)
+	}
+	got, err := m.Get(ctx, "ref")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != "new-secret" {
+		t.Errorf("replacement not visible: %q", got)
+	}
+}

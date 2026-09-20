@@ -71,12 +71,13 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 			config.Addr(settings.GatewayHost, settings.GatewayPort), err)
 	}
 
+	registry := providers.Default()
 	a.controlRoutes = control.New(
 		database,
 		a.currentSettings,
 		build.Current(),
-		accounts.NewService(providers.Default(), accounts.NewRepository(database.Conn)),
-		providers.Default(),
+		accounts.NewService(registry, accounts.NewRepository(database.Conn)),
+		registry,
 	)
 	a.control = &http.Server{
 		Handler:           a.controlRoutes,

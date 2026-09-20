@@ -28,3 +28,21 @@ func TestRegistryContents(t *testing.T) {
 		t.Error("provider IDs must be unique")
 	}
 }
+
+func TestNewValidation(t *testing.T) {
+	if _, err := New(
+		Descriptor{ID: Codex, DisplayName: "Codex"},
+		Descriptor{ID: Codex, DisplayName: "Codex Duplicate"},
+	); err == nil {
+		t.Error("duplicate provider id must be rejected")
+	}
+	if _, err := New(Descriptor{ID: "", DisplayName: "Nameless"}); err == nil {
+		t.Error("empty provider id must be rejected")
+	}
+	if _, err := New(Descriptor{ID: "x", DisplayName: ""}); err == nil {
+		t.Error("empty display name must be rejected")
+	}
+	if _, err := New(Descriptor{ID: "x", DisplayName: "X"}); err != nil {
+		t.Errorf("valid descriptor must be accepted: %v", err)
+	}
+}

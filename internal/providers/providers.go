@@ -31,20 +31,36 @@ type Registry struct {
 	providers map[string]Descriptor
 }
 
-// Default returns the registry of providers ai-lb plans to support.
-func Default() *Registry {
-	return New(Codex, "Codex", Antigravity, "Antigravity")
+// New builds a registry from descriptors. Empty IDs, empty display
+// names, and duplicate IDs are rejected: the registry is a source of
+// truth and must fail loudly on bad input rather than silently drop it.
+func New(descriptors ...Descriptor) (*Registry, error) {
+	r := &Registry{providers: map[string]Descriptor{}}
+	for _, d := range descriptors {
+		if d.ID == "" {
+			return nil, fmt.Errorf("provider descriptor has empty id")
+		}
+		if d.DisplayName == "" {
+			return nil, fmt.Errorf("provider %q has empty display name", d.ID)
+		}
+		if _, dup := r.providers[d.ID]; dup {
+			return nil, fmt.Errorf("duplicate provider id %q", d.ID)
+		}
+		d.Implemented = false
+		r.providers[d.ID] = d
+	}
+	return r, nil
 }
 
-// New builds a registry from id/display-name pairs.
-func New(pairs ...string) *Registry {
-	r := &Registry{providers: map[string]Descriptor{}}
-	for i := 0; i+1 < len(pairs); i += 2 {
-		r.providers[pairs[i]] = Descriptor{
-			ID:          pairs[i],
-			DisplayName: pairs[i+1],
-			Implemented: false,
-		}
+// Default returns the registry of providers ai-lb plans to support. The
+// descriptors are compile-time known, so construction cannot fail.
+func Default() *Registry {
+	r, err := New(
+		Descriptor{ID: Codex, DisplayName: "Codex"},
+		Descriptor{ID: Antigravity, DisplayName: "Antigravity"},
+	)
+	if err != nil {
+		panic(err)
 	}
 	return r
 }

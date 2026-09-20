@@ -11,19 +11,20 @@ import (
 	"github.com/dustincorder/ai-lb/internal/providers"
 )
 
-func testService(t *testing.T) (*Service, func()) {
+func testService(t *testing.T) (*Service, *Repository, func()) {
 	t.Helper()
 	database, err := db.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	svc := NewService(providers.Default(), NewRepository(database.Conn))
+	repo := NewRepository(database.Conn)
+	svc := NewService(providers.Default(), repo)
 	svc.Now = func() time.Time { return time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC) }
-	return svc, func() { database.Close() }
+	return svc, repo, func() { database.Close() }
 }
 
 func TestCreateGetListDelete(t *testing.T) {
-	svc, done := testService(t)
+	svc, _, done := testService(t)
 	defer done()
 	ctx := context.Background()
 
@@ -72,7 +73,7 @@ func TestCreateGetListDelete(t *testing.T) {
 }
 
 func TestUpdateAllowedFieldsProviderImmutable(t *testing.T) {
-	svc, done := testService(t)
+	svc, _, done := testService(t)
 	defer done()
 	ctx := context.Background()
 
@@ -97,7 +98,7 @@ func TestUpdateAllowedFieldsProviderImmutable(t *testing.T) {
 }
 
 func TestCreateValidation(t *testing.T) {
-	svc, done := testService(t)
+	svc, _, done := testService(t)
 	defer done()
 	ctx := context.Background()
 
@@ -143,7 +144,7 @@ func TestCreateValidation(t *testing.T) {
 }
 
 func TestCredentialsRefInternalOnly(t *testing.T) {
-	svc, done := testService(t)
+	svc, repo, done := testService(t)
 	defer done()
 	ctx := context.Background()
 
@@ -153,7 +154,7 @@ func TestCredentialsRefInternalOnly(t *testing.T) {
 	}
 	// Simulate the future auth layer linking a secret, then confirm the
 	// public read path only exposes the derived boolean.
-	if err := svc.Repo.SetCredentialsRef(ctx, a.ID, "codex:test:oauth", svc.Now()); err != nil {
+	if err := repo.SetCredentialsRef(ctx, a.ID, "codex:test:oauth", svc.Now()); err != nil {
 		t.Fatalf("SetCredentialsRef: %v", err)
 	}
 	got, err := svc.Get(ctx, a.ID)
@@ -163,7 +164,7 @@ func TestCredentialsRefInternalOnly(t *testing.T) {
 	if !got.Connected() {
 		t.Error("linked profile must report connected")
 	}
-	if err := svc.Repo.SetCredentialsRef(ctx, a.ID, "", svc.Now()); err != nil {
+	if err := repo.SetCredentialsRef(ctx, a.ID, "", svc.Now()); err != nil {
 		t.Fatalf("unlink: %v", err)
 	}
 	got, err = svc.Get(ctx, a.ID)
@@ -172,5 +173,60 @@ func TestCredentialsRefInternalOnly(t *testing.T) {
 	}
 	if got.Connected() {
 		t.Error("unlinked profile must report not connected")
+	}
+}
+
+func TestEmptyPatchRejectedWithoutTouchingRow(t *testing.T) {
+	svc, _, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "x"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Update(ctx, a.ID, Patch{}); err == nil {
+		t.Fatal("empty patch must be rejected")
+	} else {
+		var ve *ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected ValidationError, got %v", err)
+		}
+	}
+	got, err := svc.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.UpdatedAt.Equal(a.UpdatedAt) {
+		t.Error("rejected empty patch must not bump updated_at")
+	}
+}
+
+func TestConnectedDeleteRefused(t *testing.T) {
+	svc, repo, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "linked"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.SetCredentialsRef(ctx, a.ID, "codex:test:oauth", svc.Now()); err != nil {
+		t.Fatalf("SetCredentialsRef: %v", err)
+	}
+	if err := svc.Delete(ctx, a.ID); !errors.Is(err, ErrConnected) {
+		t.Fatalf("connected delete = %v, want ErrConnected", err)
+	}
+	// Row must remain.
+	if _, err := svc.Get(ctx, a.ID); err != nil {
+		t.Errorf("connected row must survive refused delete: %v", err)
+	}
+	// Unconnected profiles still delete normally.
+	b, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "plain"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.Delete(ctx, b.ID); err != nil {
+		t.Errorf("unconnected delete = %v, want nil", err)
 	}
 }

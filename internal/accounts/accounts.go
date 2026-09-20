@@ -5,7 +5,17 @@
 // and are referenced by CredentialsRef, which never leaves the backend.
 package accounts
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// Typed domain errors shared by repository and service.
+var (
+	// ErrConnected means the profile still references a stored secret
+	// and must not be deleted as plain metadata.
+	ErrConnected = errors.New("account is connected")
+)
 
 // MaxLabelLength and MaxIdentityLength bound stored strings; the API
 // rejects anything larger before it reaches SQLite.

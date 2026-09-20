@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -59,6 +60,9 @@ type patchAccountRequest struct {
 }
 
 // decodeStrict parses a small JSON body with unknown fields rejected.
+// A second JSON document or trailing garbage after the first value is
+// rejected as well: partial acceptance of concatenated payloads is a
+// parsing ambiguity, not a feature.
 func decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAccountsBody)
 	dec := json.NewDecoder(r.Body)
@@ -71,6 +75,10 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, dst any) bool {
 		default:
 			writeJSON(w, http.StatusBadRequest, errorBody("invalid_json", "malformed JSON or unknown field"))
 		}
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_json", "unexpected trailing data after JSON document"))
 		return false
 	}
 	return true
@@ -89,6 +97,8 @@ func accountError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody("invalid_"+ve.Field, ve.Message))
 	case errors.Is(err, accounts.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errorBody("account_not_found", "no account with this id"))
+	case errors.Is(err, accounts.ErrConnected):
+		writeJSON(w, http.StatusConflict, errorBody("account_connected", "connected account cannot be deleted as plain metadata"))
 	case errors.Is(err, accounts.ErrConflict):
 		writeJSON(w, http.StatusConflict, errorBody("account_conflict", "account could not be created"))
 	case errors.Is(err, accounts.ErrInvalid):
