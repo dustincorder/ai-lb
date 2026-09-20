@@ -40,9 +40,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Dashboard' })
 
     await user.click(screen.getByRole('button', { name: 'Accounts' }))
-    expect(
-      await screen.findByText('Provider integrations are not implemented yet.'),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Accounts' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Gateway' }))
     expect(await screen.findByRole('heading', { name: 'Gateway' })).toBeInTheDocument()

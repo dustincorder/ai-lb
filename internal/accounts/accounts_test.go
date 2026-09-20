@@ -1,0 +1,176 @@
+package accounts
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dustincorder/ai-lb/internal/db"
+	"github.com/dustincorder/ai-lb/internal/providers"
+)
+
+func testService(t *testing.T) (*Service, func()) {
+	t.Helper()
+	database, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	svc := NewService(providers.Default(), NewRepository(database.Conn))
+	svc.Now = func() time.Time { return time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC) }
+	return svc, func() { database.Close() }
+}
+
+func TestCreateGetListDelete(t *testing.T) {
+	svc, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "Personal", Identity: "me@example.com"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if a.ID == "" || a.Provider != providers.Codex || !a.Enabled {
+		t.Errorf("unexpected created account: %+v", a)
+	}
+	if a.Connected() {
+		t.Error("new profile must not be connected")
+	}
+	if a.CreatedAt.IsZero() || a.UpdatedAt.IsZero() {
+		t.Error("timestamps must be populated")
+	}
+	if a.CreatedAt.Location() != time.UTC {
+		t.Error("timestamps must be UTC")
+	}
+
+	got, err := svc.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != a {
+		t.Errorf("Get returned %+v, want %+v", got, a)
+	}
+
+	list, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != a.ID {
+		t.Errorf("List = %+v, want one account", list)
+	}
+
+	if err := svc.Delete(ctx, a.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := svc.Get(ctx, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after delete = %v, want ErrNotFound", err)
+	}
+	if err := svc.Delete(ctx, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("double delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateAllowedFieldsProviderImmutable(t *testing.T) {
+	svc, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Antigravity, Label: "Work"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	label, identity, enabled := "Renamed", "id@example.com", false
+	updated, err := svc.Update(ctx, a.ID, Patch{Label: &label, Identity: &identity, Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Label != "Renamed" || updated.Identity != "id@example.com" || updated.Enabled {
+		t.Errorf("patch not applied: %+v", updated)
+	}
+	if updated.Provider != providers.Antigravity {
+		t.Errorf("provider must stay %q, got %q", providers.Antigravity, updated.Provider)
+	}
+	if updated.CredentialsRef != "" {
+		t.Error("update must not touch credentials_ref")
+	}
+}
+
+func TestCreateValidation(t *testing.T) {
+	svc, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	if _, err := svc.Create(ctx, CreateInput{Provider: "banana-ai", Label: "x"}); err == nil {
+		t.Error("unknown provider must be rejected")
+	} else {
+		var ve *ValidationError
+		if !errors.As(err, &ve) || ve.Field != "provider" {
+			t.Errorf("expected provider ValidationError, got %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		label string
+	}{
+		{"empty", ""},
+		{"blank", "   "},
+		{"too long", strings.Repeat("x", MaxLabelLength+1)},
+	} {
+		if _, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: tc.label}); err == nil {
+			t.Errorf("label %q must be rejected", tc.name)
+		}
+	}
+	// Label is trimmed; identity is optional and not email-validated.
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "  Padded  ", Identity: "not-an-email"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if a.Label != "Padded" || a.Identity != "not-an-email" {
+		t.Errorf("unexpected normalization: %+v", a)
+	}
+	if _, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "ok", Identity: strings.Repeat("y", MaxIdentityLength+1)}); err == nil {
+		t.Error("oversized identity must be rejected")
+	}
+	disabled := false
+	d, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "off", Enabled: &disabled})
+	if err != nil {
+		t.Fatalf("Create disabled: %v", err)
+	}
+	if d.Enabled {
+		t.Error("explicit enabled=false must be honored")
+	}
+}
+
+func TestCredentialsRefInternalOnly(t *testing.T) {
+	svc, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "creds"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Simulate the future auth layer linking a secret, then confirm the
+	// public read path only exposes the derived boolean.
+	if err := svc.Repo.SetCredentialsRef(ctx, a.ID, "codex:test:oauth", svc.Now()); err != nil {
+		t.Fatalf("SetCredentialsRef: %v", err)
+	}
+	got, err := svc.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Connected() {
+		t.Error("linked profile must report connected")
+	}
+	if err := svc.Repo.SetCredentialsRef(ctx, a.ID, "", svc.Now()); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	got, err = svc.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Connected() {
+		t.Error("unlinked profile must report not connected")
+	}
+}

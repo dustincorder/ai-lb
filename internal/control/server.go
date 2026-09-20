@@ -21,9 +21,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/db"
+	"github.com/dustincorder/ai-lb/internal/providers"
 	"github.com/dustincorder/ai-lb/internal/update"
 	web "github.com/dustincorder/ai-lb/web"
 )
@@ -41,22 +43,26 @@ const updateRepoName = "ai-lb"
 
 // Server is the control-plane HTTP server.
 type Server struct {
-	DB      *db.DB
-	Active  func() config.Settings
-	Build   build.Info
-	Updates *update.Checker
-	mux     *http.ServeMux
+	DB        *db.DB
+	Active    func() config.Settings
+	Build     build.Info
+	Updates   *update.Checker
+	Accounts  *accounts.Service
+	Providers *providers.Registry
+	mux       *http.ServeMux
 }
 
 // New builds the control server routes. active reports the settings the
 // running listeners bound; the database holds the configured settings.
-func New(database *db.DB, active func() config.Settings, current build.Info) *Server {
+func New(database *db.DB, active func() config.Settings, current build.Info, acc *accounts.Service, registry *providers.Registry) *Server {
 	s := &Server{
-		DB:      database,
-		Active:  active,
-		Build:   current,
-		Updates: update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
-		mux:     http.NewServeMux(),
+		DB:        database,
+		Active:    active,
+		Build:     current,
+		Updates:   update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
+		Accounts:  acc,
+		Providers: registry,
+		mux:       http.NewServeMux(),
 	}
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/app", s.handleApp)
@@ -65,6 +71,9 @@ func New(database *db.DB, active func() config.Settings, current build.Info) *Se
 	s.mux.HandleFunc("/api/update", s.handleUpdate)
 	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/update/download", s.handleUpdateDownload)
+	s.mux.HandleFunc("/api/providers", s.handleProviders)
+	s.mux.HandleFunc("/api/accounts", s.handleAccounts)
+	s.mux.HandleFunc("/api/accounts/{id}", s.handleAccount)
 	s.mux.HandleFunc("/", s.handleUI)
 	return s
 }
