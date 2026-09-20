@@ -82,6 +82,37 @@ func nightlyBuild(tag, sha string) build.Info {
 	}
 }
 
+func TestArtifactNameCoversReleaseTargets(t *testing.T) {
+	cases := map[string]string{
+		"linux/amd64":   "ai-lb_v0.2.0_linux_amd64.tar.gz",
+		"linux/arm64":   "ai-lb_v0.2.0_linux_arm64.tar.gz",
+		"windows/amd64": "ai-lb_v0.2.0_windows_amd64.zip",
+		"windows/arm64": "ai-lb_v0.2.0_windows_arm64.zip",
+		"darwin/amd64":  "ai-lb_v0.2.0_darwin_amd64.tar.gz",
+		"darwin/arm64":  "ai-lb_v0.2.0_darwin_arm64.tar.gz",
+	}
+	for platform, want := range cases {
+		parts := splitPlatform(platform)
+		if got := ArtifactName("v0.2.0", parts[0], parts[1]); got != want {
+			t.Errorf("ArtifactName(%s) = %q, want %q", platform, got, want)
+		}
+		// SelectAsset must round-trip the helper's own names.
+		rel := &Release{Assets: []Asset{{Name: want, URL: "https://example.com/" + want}}}
+		if got := SelectAsset(rel, parts[0], parts[1]); got == nil || got.Name != want {
+			t.Errorf("SelectAsset(%s) did not match %q", platform, want)
+		}
+	}
+}
+
+func splitPlatform(p string) [2]string {
+	for i := 0; i < len(p); i++ {
+		if p[i] == '/' {
+			return [2]string{p[:i], p[i+1:]}
+		}
+	}
+	return [2]string{p, ""}
+}
+
 func TestStableDetectsNewerStable(t *testing.T) {
 	rels := []apiRelease{mkRelease("v0.2.0", false, false, testNow, assetFor("v0.2.0", "linux", "amd64"))}
 	client, _ := serveReleases(t, rels, nil)

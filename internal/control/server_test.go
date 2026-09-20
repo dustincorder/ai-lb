@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -370,11 +371,16 @@ func TestServeUIFallbackWithoutBuild(t *testing.T) {
 // TestUpdateEndpoints wires the checker to a mock releases server and
 // exercises the management contract: idle state, manual check offering
 // a newer stable, and a verified download. No real network is used.
+//
+// The mock asset name is derived from the test runner's own platform
+// through update.ArtifactName: hardcoding one OS here breaks matrix CI
+// on every other OS (the checker selects by runtime.GOOS/GOARCH).
 func TestUpdateEndpoints(t *testing.T) {
 	payload := []byte("fake-binary-bytes")
 	sum := sha256.Sum256(payload)
 	hexSum := hex.EncodeToString(sum[:])
 	tag := "v9.9.0"
+	assetName := update.ArtifactName(tag, runtime.GOOS, runtime.GOARCH)
 
 	var base string
 	mux := http.NewServeMux()
@@ -384,7 +390,7 @@ func TestUpdateEndpoints(t *testing.T) {
 			"draft": false, "prerelease": false,
 			"published_at": "2026-09-20T12:00:00Z",
 			"assets": []map[string]any{
-				{"name": "ai-lb_" + tag + "_linux_amd64.tar.gz",
+				{"name": assetName,
 					"browser_download_url": base + "/dl/bin", "size": len(payload)},
 				{"name": "checksums.txt",
 					"browser_download_url": base + "/dl/sums", "size": 100},
@@ -397,7 +403,7 @@ func TestUpdateEndpoints(t *testing.T) {
 		_, _ = w.Write(payload)
 	})
 	mux.HandleFunc("/dl/sums", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(hexSum + "  ai-lb_" + tag + "_linux_amd64.tar.gz\n"))
+		_, _ = w.Write([]byte(hexSum + "  " + assetName + "\n"))
 	})
 	gh := httptest.NewServer(mux)
 	defer gh.Close()

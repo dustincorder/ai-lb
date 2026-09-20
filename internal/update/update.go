@@ -341,24 +341,39 @@ func latestPicks(rels []Release) (stable *Release, nightly *Release) {
 	return stable, nightly
 }
 
-// SelectAsset picks the artifact for a platform from release naming:
+// ArtifactSuffix is the platform suffix of release archives:
 //
-//	ai-lb_<version>_<goos>_<goarch>.tar.gz (unix)
-//	ai-lb_<version>_<goos>_<goarch>.zip     (windows)
+//	_<goos>_<goarch>.tar.gz (unix)
+//	_<goos>_<goarch>.zip     (windows)
 //
+// Release builds exist for linux/amd64, linux/arm64, windows/amd64,
+// windows/arm64, darwin/amd64, and darwin/arm64. The matching is generic
+// over GOOS/GOARCH pairs on purpose: an unknown platform simply matches
+// nothing (see SelectAsset), never some other platform's artifact.
+func ArtifactSuffix(goos, goarch string) string {
+	if goos == "windows" {
+		return fmt.Sprintf("_%s_%s.zip", goos, goarch)
+	}
+	return fmt.Sprintf("_%s_%s.tar.gz", goos, goarch)
+}
+
+// ArtifactName is the full release archive file name for a tag and
+// platform: ai-lb_<version>_<goos>_<goarch>.<ext>. Tests and tooling
+// must build expected names through this helper instead of hardcoding
+// one platform, or matrix CI on other OSes breaks.
+func ArtifactName(tag, goos, goarch string) string {
+	return "ai-lb_" + tag + ArtifactSuffix(goos, goarch)
+}
+
+// SelectAsset picks the artifact for a platform from release naming.
 // It matches by OS/arch suffix only, so version formats never matter.
 // Nil means this release has no build for the platform.
 func SelectAsset(rel *Release, goos, goarch string) *Asset {
-	suffixes := []string{fmt.Sprintf("_%s_%s.tar.gz", goos, goarch)}
-	if goos == "windows" {
-		suffixes = []string{fmt.Sprintf("_%s_%s.zip", goos, goarch)}
-	}
+	sfx := ArtifactSuffix(goos, goarch)
 	for i := range rel.Assets {
-		for _, sfx := range suffixes {
-			if strings.HasSuffix(rel.Assets[i].Name, sfx) {
-				a := rel.Assets[i]
-				return &a
-			}
+		if strings.HasSuffix(rel.Assets[i].Name, sfx) {
+			a := rel.Assets[i]
+			return &a
 		}
 	}
 	return nil
