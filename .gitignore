@@ -1,0 +1,55 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Credential / token / session dumps (never commit real ones)
+*.pem
+*.key
+*.p12
+*.pfx
+*token*.json
+*credentials*.json
+*session*.json
+auth.json
+*account-export*.json
+
+# Local runtime state and databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+data/
+state/
+storage/
+runtime/
+tmp/
+temp/
+*.log
+logs/
+
+# OS junk
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+*.rej
