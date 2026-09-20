@@ -1,0 +1,71 @@
+# GoReleaser configuration for ai-lb.
+#
+# Frontend contract: the React production build MUST be compiled before
+# GoReleaser runs (workflows do `npm ci` + `npm run build` first) so the
+# real UI embeds into the binaries. A binary without the UI is a broken
+# release; the release workflows enforce the order.
+#
+# Channels: stable releases come from vX.Y.Z tags; nightly prereleases
+# come from v<base>-<sha>-nightly tags (see .github/workflows). The
+# CHANNEL env selects the build channel baked into the binary
+# (stable/nightly); local builds keep the dev default.
+version: 2
+
+project_name: ai-lb
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ai-lb
+    main: ./cmd/ai-lb
+    binary: ai-lb
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+        -X github.com/dustincorder/ai-lb/internal/build.Version={{.Version}}
+        -X github.com/dustincorder/ai-lb/internal/build.Commit={{.Commit}}
+        -X github.com/dustincorder/ai-lb/internal/build.BuildTime={{.Date}}
+        -X github.com/dustincorder/ai-lb/internal/build.Channel={{.Env.CHANNEL}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+nfpms:
+  - id: packages
+    package_name: ai-lb
+    vendor: ai-lb
+    maintainer: Dustin Corder
+    homepage: https://github.com/dustincorder/ai-lb
+    description: Local load balancer and OpenAI-compatible proxy for pooled AI coding accounts.
+    license: PolyForm-Noncommercial-1.0.0
+    bindir: /usr/bin
+    formats:
+      - deb
+      - rpm
+      - archlinux
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{.Tag}}"

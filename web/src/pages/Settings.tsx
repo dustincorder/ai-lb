@@ -12,6 +12,7 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [controlPort, setControlPort] = useState('')
   const [gatewayPort, setGatewayPort] = useState('')
+  const [channel, setChannel] = useState('stable')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -22,6 +23,7 @@ export function SettingsPage() {
         setSettings(s)
         setControlPort(String(s.control_port))
         setGatewayPort(String(s.gateway_port))
+        setChannel(s.update_channel || 'stable')
       })
       .catch((e: Error) => setError(e.message))
   }, [])
@@ -49,6 +51,7 @@ export function SettingsPage() {
         control_port: cp,
         gateway_host: settings.gateway_host,
         gateway_port: gp,
+        update_channel: channel,
       }
       const res = await saveSettings(next)
       setSettings(res.settings)
@@ -88,6 +91,20 @@ export function SettingsPage() {
           value={gatewayPort}
           onChange={(e) => setGatewayPort(e.target.value)}
         />
+      </div>
+      <div>
+        <label htmlFor="update-channel">Update channel</label>
+        <select
+          id="update-channel"
+          value={channel}
+          onChange={(e) => setChannel(e.target.value)}
+        >
+          <option value="stable">Stable — receives only stable releases.</option>
+          <option value="nightly">
+            Nightly — receives the latest development builds and stable releases when a newer
+            stable version is available.
+          </option>
+        </select>
       </div>
       <button type="button" onClick={onSave} disabled={saving}>
         {saving ? 'Saving…' : 'Save'}

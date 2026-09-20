@@ -2,7 +2,10 @@ module github.com/dustincorder/ai-lb
 
 go 1.27.0
 
-require modernc.org/sqlite v1.59.0
+require (
+	golang.org/x/mod v0.38.0
+	modernc.org/sqlite v1.59.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

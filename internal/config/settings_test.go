@@ -50,6 +50,7 @@ func TestValidateRejectsListenerCollision(t *testing.T) {
 		ControlPort: 9000,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 9000,
+		UpdateChannel: UpdateChannelStable,
 	}
 	if err := Validate(colliding); err == nil {
 		t.Error("identical control/gateway bind addresses should be rejected")
@@ -59,6 +60,7 @@ func TestValidateRejectsListenerCollision(t *testing.T) {
 		ControlPort: 9000,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 9001,
+		UpdateChannel: UpdateChannelStable,
 	}
 	if err := Validate(distinct); err != nil {
 		t.Errorf("distinct ports should be valid: %v", err)
@@ -69,6 +71,7 @@ func TestValidateRejectsListenerCollision(t *testing.T) {
 		ControlPort: 9000,
 		GatewayHost: "127.0.0.2",
 		GatewayPort: 9000,
+		UpdateChannel: UpdateChannelStable,
 	}
 	if err := Validate(splitLoopback); err != nil {
 		t.Errorf("different loopback IPs on one port should be valid: %v", err)
@@ -81,6 +84,7 @@ func TestOverridesApplyPartial(t *testing.T) {
 		ControlPort: 8401,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 8402,
+		UpdateChannel: UpdateChannelStable,
 	}
 	gw := 9000
 	out, err := Overrides{GatewayPort: &gw}.Apply(base)

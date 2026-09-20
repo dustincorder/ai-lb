@@ -21,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/db"
+	"github.com/dustincorder/ai-lb/internal/update"
 	web "github.com/dustincorder/ai-lb/web"
 )
 
@@ -33,21 +35,36 @@ var Version = "dev"
 // anything larger is rejected before decoding.
 const maxSettingsBody = 64 * 1024
 
+// updateRepo identifies the release source for the checker.
+const updateRepoOwner = "dustincorder"
+const updateRepoName = "ai-lb"
+
 // Server is the control-plane HTTP server.
 type Server struct {
-	DB     *db.DB
-	Active func() config.Settings
-	mux    *http.ServeMux
+	DB      *db.DB
+	Active  func() config.Settings
+	Build   build.Info
+	Updates *update.Checker
+	mux     *http.ServeMux
 }
 
 // New builds the control server routes. active reports the settings the
 // running listeners bound; the database holds the configured settings.
-func New(database *db.DB, active func() config.Settings) *Server {
-	s := &Server{DB: database, Active: active, mux: http.NewServeMux()}
+func New(database *db.DB, active func() config.Settings, current build.Info) *Server {
+	s := &Server{
+		DB:      database,
+		Active:  active,
+		Build:   current,
+		Updates: update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
+		mux:     http.NewServeMux(),
+	}
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/app", s.handleApp)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/gateway", s.handleGateway)
+	s.mux.HandleFunc("/api/update", s.handleUpdate)
+	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
+	s.mux.HandleFunc("/api/update/download", s.handleUpdateDownload)
 	s.mux.HandleFunc("/", s.handleUI)
 	return s
 }
@@ -115,8 +132,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "control"})
 }
 
-// handleApp reports version, ACTIVE listener addresses, database status,
-// and platform. It never exposes sensitive filesystem or auth data.
+// handleApp reports version, build metadata, ACTIVE listener addresses,
+// database status, and platform. It never exposes sensitive filesystem
+// or auth data.
 func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
@@ -125,6 +143,12 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Active()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version": Version,
+		"build": map[string]string{
+			"version":    s.Build.Version,
+			"commit":     s.Build.Commit,
+			"build_time": s.Build.BuildTime,
+			"channel":    s.Build.Channel,
+		},
 		"control": map[string]string{
 			"host": cfg.ControlHost,
 			"port": itoa(cfg.ControlPort),
@@ -181,9 +205,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "save_failed"})
 			return
 		}
+		// The update channel applies to the next check without a restart;
+		// only listener changes require one.
+		active := s.Active()
+		listeners := next
+		listeners.UpdateChannel = active.UpdateChannel
 		writeJSON(w, http.StatusOK, SettingsResponse{
 			Settings:        next,
-			RestartRequired: next != s.Active(),
+			RestartRequired: listeners != active,
 		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
@@ -218,6 +247,67 @@ func (s *Server) handleGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url": url, "reachable": true, "status": body["status"],
+	})
+}
+
+// updateChannel reads the configured update channel. Settings load
+// failures fail the update action, never the whole request path.
+func (s *Server) updateChannel() (string, error) {
+	configured, err := s.DB.LoadSettings()
+	if err != nil {
+		return "", err
+	}
+	return configured.UpdateChannel, nil
+}
+
+// handleUpdate serves the runtime update state. It never embeds raw
+// GitHub JSON.
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Updates.Get())
+}
+
+// handleUpdateCheck runs one update check synchronously (bounded by the
+// checker's short timeout) and returns the resulting state.
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	channel, err := s.updateChannel()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Updates.Check(r.Context(), s.Build, channel))
+}
+
+// handleUpdateDownload fetches the selected artifact into a temp
+// directory and accepts it only on SHA-256 match against the release
+// checksums. Nothing is installed or executed.
+func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	channel, err := s.updateChannel()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load_failed"})
+		return
+	}
+	res, err := s.Updates.Download(r.Context(), s.Build, channel)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "downloaded",
+		"path":   res.Path,
+		"sha256": res.SHA256,
+		"size":   res.Size,
 	})
 }
 

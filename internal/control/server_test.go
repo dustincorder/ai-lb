@@ -1,15 +1,21 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/db"
+	"github.com/dustincorder/ai-lb/internal/update"
 )
 
 func testServer(t *testing.T) *Server {
@@ -24,7 +30,7 @@ func testServer(t *testing.T) *Server {
 		t.Fatalf("LoadSettings: %v", err)
 	}
 	current := settings
-	return New(database, func() config.Settings { return current })
+	return New(database, func() config.Settings { return current }, build.Info{Version: "test", Channel: "dev"})
 }
 
 // divergentServer returns a control server whose ACTIVE settings differ
@@ -37,16 +43,17 @@ func divergentServer(t *testing.T) (*Server, config.Settings, config.Settings) {
 	}
 	t.Cleanup(func() { database.Close() })
 	configured := config.Settings{
-		ControlHost: "127.0.0.1",
-		ControlPort: 8441,
-		GatewayHost: "127.0.0.1",
-		GatewayPort: 8442,
+		ControlHost:   "127.0.0.1",
+		ControlPort:   8441,
+		GatewayHost:   "127.0.0.1",
+		GatewayPort:   8442,
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := database.SaveSettings(configured); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	active := config.Defaults()
-	return New(database, func() config.Settings { return active }), configured, active
+	return New(database, func() config.Settings { return active }, build.Info{Version: "test", Channel: "dev"}), configured, active
 }
 
 func getJSON(t *testing.T, url string) (int, map[string]any) {
@@ -128,6 +135,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		ControlPort: 8411,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 8412,
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	raw, _ := json.Marshal(next)
 	put, err := http.NewRequest(http.MethodPut, srv.URL+"/api/settings", strings.NewReader(string(raw)))
@@ -221,10 +229,11 @@ func TestPutShowsConfiguredImmediately(t *testing.T) {
 	defer srv.Close()
 
 	next := config.Settings{
-		ControlHost: "127.0.0.1",
-		ControlPort: 8451,
-		GatewayHost: "127.0.0.1",
-		GatewayPort: 8452,
+		ControlHost:   "127.0.0.1",
+		ControlPort:   8451,
+		GatewayHost:   "127.0.0.1",
+		GatewayPort:   8452,
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	raw, _ := json.Marshal(next)
 	put, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/settings", strings.NewReader(string(raw)))
@@ -356,4 +365,96 @@ func TestServeUIFallbackWithoutBuild(t *testing.T) {
 			t.Errorf("GET %s should serve index.html, got %q", path, body)
 		}
 	}
+}
+
+// TestUpdateEndpoints wires the checker to a mock releases server and
+// exercises the management contract: idle state, manual check offering
+// a newer stable, and a verified download. No real network is used.
+func TestUpdateEndpoints(t *testing.T) {
+	payload := []byte("fake-binary-bytes")
+	sum := sha256.Sum256(payload)
+	hexSum := hex.EncodeToString(sum[:])
+	tag := "v9.9.0"
+
+	var base string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/releases", func(w http.ResponseWriter, r *http.Request) {
+		rel := map[string]any{
+			"tag_name": tag, "name": tag, "html_url": base + "/rel",
+			"draft": false, "prerelease": false,
+			"published_at": "2026-09-20T12:00:00Z",
+			"assets": []map[string]any{
+				{"name": "ai-lb_" + tag + "_linux_amd64.tar.gz",
+					"browser_download_url": base + "/dl/bin", "size": len(payload)},
+				{"name": "checksums.txt",
+					"browser_download_url": base + "/dl/sums", "size": 100},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]any{rel})
+	})
+	mux.HandleFunc("/dl/bin", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	})
+	mux.HandleFunc("/dl/sums", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(hexSum + "  ai-lb_" + tag + "_linux_amd64.tar.gz\n"))
+	})
+	gh := httptest.NewServer(mux)
+	defer gh.Close()
+	base = gh.URL
+
+	s := testServer(t)
+	uc := update.NewClient("o", "r", "test")
+	uc.APIBase = gh.URL
+	s.Updates = update.NewChecker(uc)
+	// The test binary reports a dev build; the endpoints below exercise
+	// the check path explicitly, which is allowed on any build.
+	s.Build = build.Info{Version: "v9.8.0", Commit: "c", Channel: "dev"}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+
+	code, body := getJSON(t, srv.URL+"/api/update")
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/update status = %d", code)
+	}
+	if body["status"] != "idle" {
+		t.Errorf("initial update status = %v, want idle", body["status"])
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/update/check", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/update/check: %v", err)
+	}
+	var checked map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&checked); err != nil {
+		t.Fatalf("decode check: %v", err)
+	}
+	resp.Body.Close()
+	if checked["status"] != "available" || checked["available_version"] != tag {
+		t.Errorf("check should offer %s, got %v", tag, checked)
+	}
+
+	dreq, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/update/download", nil)
+	dresp, err := http.DefaultClient.Do(dreq)
+	if err != nil {
+		t.Fatalf("POST /api/update/download: %v", err)
+	}
+	var dl map[string]any
+	if err := json.NewDecoder(dresp.Body).Decode(&dl); err != nil {
+		t.Fatalf("decode download: %v", err)
+	}
+	dresp.Body.Close()
+	if dl["status"] != "downloaded" || dl["sha256"] != hexSum {
+		t.Errorf("download should verify and report path, got %v", dl)
+	}
+	path, _ := dl["path"].(string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read downloaded artifact: %v", err)
+	}
+	if string(data) != string(payload) {
+		t.Error("downloaded bytes differ")
+	}
+	os.RemoveAll(filepath.Dir(path))
 }

@@ -3,6 +3,7 @@ export interface Settings {
   control_port: number
   gateway_host: string
   gateway_port: number
+  update_channel: string
 }
 
 export interface AppInfo {
@@ -18,6 +19,27 @@ export interface GatewayStatus {
   reachable: boolean
   status?: string
   error?: string
+}
+
+export interface UpdateState {
+  status: string
+  channel: string
+  current_version: string
+  available_version?: string
+  available_channel?: string
+  release_url?: string
+  asset?: { name: string; url: string; size: number }
+  asset_note?: string
+  published_at?: string
+  error?: string
+  checked_at?: string
+}
+
+export interface DownloadResult {
+  status: string
+  path: string
+  sha256: string
+  size: number
 }
 
 export interface SettingsUpdate {
@@ -57,4 +79,19 @@ export async function saveSettings(s: Settings): Promise<SettingsUpdate> {
 export async function fetchGateway(): Promise<GatewayStatus> {
   const res = await check(await fetch('/api/gateway'))
   return (await res.json()) as GatewayStatus
+}
+
+export async function fetchUpdate(): Promise<UpdateState> {
+  const res = await check(await fetch('/api/update'))
+  return (await res.json()) as UpdateState
+}
+
+export async function postUpdateCheck(): Promise<UpdateState> {
+  const res = await check(await fetch('/api/update/check', { method: 'POST' }))
+  return (await res.json()) as UpdateState
+}
+
+export async function postUpdateDownload(): Promise<DownloadResult> {
+  const res = await check(await fetch('/api/update/download', { method: 'POST' }))
+  return (await res.json()) as DownloadResult
 }

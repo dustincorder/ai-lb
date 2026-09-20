@@ -61,6 +61,7 @@ func TestReopenDoesNotReapplyMigrations(t *testing.T) {
 		ControlPort: 8421,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 8422,
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := d.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
@@ -301,6 +302,7 @@ func TestSettingsPersistence(t *testing.T) {
 		ControlPort: 8401,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: 8402,
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := d.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)

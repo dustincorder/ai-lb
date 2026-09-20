@@ -29,4 +29,10 @@ describe('SettingsPage', () => {
     expect(control.value).toBe('8317')
     expect(gateway.value).toBe('8318')
   })
+
+  it('defaults the update channel to stable when unset', async () => {
+    render(<SettingsPage />)
+    const channel = (await screen.findByLabelText('Update channel')) as HTMLSelectElement
+    expect(channel.value).toBe('stable')
+  })
 })

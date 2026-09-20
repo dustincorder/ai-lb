@@ -51,6 +51,7 @@ func TestStartupShutdown(t *testing.T) {
 		ControlPort: freePort(t),
 		GatewayHost: "127.0.0.1",
 		GatewayPort: freePort(t),
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := database.SaveSettings(settings); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
@@ -97,6 +98,7 @@ func TestPortConflictFailsFast(t *testing.T) {
 		ControlPort: busy,
 		GatewayHost: "127.0.0.1",
 		GatewayPort: freePort(t),
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := database.SaveSettings(settings); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
@@ -124,6 +126,7 @@ func TestPartialOverridesKeepsPersistedValues(t *testing.T) {
 		ControlPort: freePort(t),
 		GatewayHost: "127.0.0.1",
 		GatewayPort: freePort(t),
+		UpdateChannel: config.UpdateChannelStable,
 	}
 	if err := database.SaveSettings(persisted); err != nil {
 		t.Fatalf("SaveSettings: %v", err)

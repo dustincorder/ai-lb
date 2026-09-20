@@ -22,19 +22,27 @@ const (
 
 // Settings is the persisted service configuration.
 type Settings struct {
-	ControlHost string `json:"control_host"`
-	ControlPort int    `json:"control_port"`
-	GatewayHost string `json:"gateway_host"`
-	GatewayPort int    `json:"gateway_port"`
+	ControlHost   string `json:"control_host"`
+	ControlPort   int    `json:"control_port"`
+	GatewayHost   string `json:"gateway_host"`
+	GatewayPort   int    `json:"gateway_port"`
+	UpdateChannel string `json:"update_channel"`
 }
+
+// Update channels.
+const (
+	UpdateChannelStable  = "stable"
+	UpdateChannelNightly = "nightly"
+)
 
 // Defaults returns the default settings.
 func Defaults() Settings {
 	return Settings{
-		ControlHost: DefaultControlHost,
-		ControlPort: DefaultControlPort,
-		GatewayHost: DefaultGatewayHost,
-		GatewayPort: DefaultGatewayPort,
+		ControlHost:   DefaultControlHost,
+		ControlPort:   DefaultControlPort,
+		GatewayHost:   DefaultGatewayHost,
+		GatewayPort:   DefaultGatewayPort,
+		UpdateChannel: UpdateChannelStable,
 	}
 }
 
@@ -73,6 +81,9 @@ func Validate(s Settings) error {
 	if sameBindAddress(s.ControlHost, s.ControlPort, s.GatewayHost, s.GatewayPort) {
 		return fmt.Errorf("control and gateway listeners collide on %s",
 			Addr(s.ControlHost, s.ControlPort))
+	}
+	if s.UpdateChannel != UpdateChannelStable && s.UpdateChannel != UpdateChannelNightly {
+		return fmt.Errorf("update_channel must be %q or %q", UpdateChannelStable, UpdateChannelNightly)
 	}
 	return nil
 }

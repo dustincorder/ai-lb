@@ -203,7 +203,26 @@ time and stay inside the adapter.
 - **User Portal** (future, separate surface): own usage, remaining
   limits, allowed models, API endpoint, key status.
 
-## 10. Process model
+## 10. Releases and updates (current)
+
+- Channels: `stable` (versioned immutable releases) and `nightly`
+  (immutable per-`main`-commit prereleases, latest 10 kept). Built with
+  GoReleaser + nFPM from `v*` tags; the React build always precedes the
+  Go compile so release binaries embed the real UI.
+- Build metadata (`version`, `commit`, `build_time`, `channel`) is baked
+  in via ldflags, printed by `ai-lb --version`, and served at
+  `GET /api/app`.
+- The service polls the public GitHub Releases API in the background
+  after startup (short timeout, advisory only, no identifiers sent) and
+  exposes `GET /api/update` + `POST /api/update/check`. Downloads are
+  SHA-256-verified against the release `checksums.txt` and never
+  installed automatically.
+- Future package-aware path: standalone binary → verified downloader;
+  `.deb`/`.rpm`/Arch → distro-aware update path (no apt/yum/pacman
+  repositories yet). Signing/notarization and SBOM/provenance attach
+  later — checksums plus versioned build metadata keep that door open.
+
+## 11. Process model
 
 One Go service process: control server, gateway listener, SQLite, and
 (later) quota refresher and process manager. No desktop shell, no
@@ -211,7 +230,7 @@ webview, no sidecar, no daemon/service wrapper in v0.1. The user runs
 `./ai-lb` in the foreground (or under their own supervision);
 autostart/headless behavior is a maintainer decision tracked in the RFC.
 
-## 11. Explicit non-goals for v0.1
+## 12. Explicit non-goals for v0.1
 
 Cloud control plane; hosted SaaS; Kubernetes / multi-node / distributed
 routing; PostgreSQL server; Redis; billing platform and payment

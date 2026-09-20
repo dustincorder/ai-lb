@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/control"
 	"github.com/dustincorder/ai-lb/internal/db"
@@ -22,10 +23,11 @@ const shutdownTimeout = 10 * time.Second
 
 // App is the running service.
 type App struct {
-	DB       *db.DB
-	settings atomic.Value // config.Settings
-	control  *http.Server
-	gateway  *http.Server
+	DB            *db.DB
+	settings      atomic.Value // config.Settings
+	control       *http.Server
+	controlRoutes *control.Server
+	gateway       *http.Server
 }
 
 // Run opens the database, loads settings, binds both listeners, and
@@ -67,8 +69,9 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 			config.Addr(settings.GatewayHost, settings.GatewayPort), err)
 	}
 
+	a.controlRoutes = control.New(database, a.currentSettings, build.Current())
 	a.control = &http.Server{
-		Handler:           control.New(database, a.currentSettings),
+		Handler:           a.controlRoutes,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -84,6 +87,11 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 	errCh := make(chan error, 2)
 	go func() { errCh <- a.control.Serve(controlListener) }()
 	go func() { errCh <- a.gateway.Serve(gatewayListener) }()
+
+	// Background update check: advisory only. It never blocks startup,
+	// never touches the gateway path, and any failure (including no
+	// network) stays a state flag. Dev builds skip it entirely.
+	a.checkForUpdates(context.Background(), stored.UpdateChannel)
 
 	select {
 	case <-ctx.Done():
@@ -107,4 +115,18 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 // currentSettings returns the settings active for this run.
 func (a *App) currentSettings() config.Settings {
 	return a.settings.Load().(config.Settings)
+}
+
+// checkForUpdates runs one update check in the background once the
+// listeners are up.
+func (a *App) checkForUpdates(ctx context.Context, channel string) {
+	current := build.Current()
+	if current.IsDev() {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		a.controlRoutes.Updates.Check(ctx, current, channel)
+	}()
 }

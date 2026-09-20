@@ -221,10 +221,11 @@ func (d *DB) validate() error {
 func (d *DB) seedDefaults() error {
 	defaults := config.Defaults()
 	seed := map[string]string{
-		"control_host": defaults.ControlHost,
-		"control_port": itoa(defaults.ControlPort),
-		"gateway_host": defaults.GatewayHost,
-		"gateway_port": itoa(defaults.GatewayPort),
+		"control_host":   defaults.ControlHost,
+		"control_port":   itoa(defaults.ControlPort),
+		"gateway_host":   defaults.GatewayHost,
+		"gateway_port":   itoa(defaults.GatewayPort),
+		"update_channel": defaults.UpdateChannel,
 	}
 	for k, v := range seed {
 		if _, err := d.Conn.Exec(
@@ -278,6 +279,9 @@ func (d *DB) LoadSettings() (config.Settings, error) {
 		}
 		s.GatewayPort = n
 	}
+	if v, ok := values["update_channel"]; ok {
+		s.UpdateChannel = v
+	}
 	if err := config.Validate(s); err != nil {
 		return s, fmt.Errorf("stored settings invalid: %w", err)
 	}
@@ -309,10 +313,11 @@ func (d *DB) SaveSettings(s config.Settings) error {
 	}
 	defer tx.Rollback()
 	pairs := map[string]string{
-		"control_host": s.ControlHost,
-		"control_port": itoa(s.ControlPort),
-		"gateway_host": s.GatewayHost,
-		"gateway_port": itoa(s.GatewayPort),
+		"control_host":   s.ControlHost,
+		"control_port":   itoa(s.ControlPort),
+		"gateway_host":   s.GatewayHost,
+		"gateway_port":   itoa(s.GatewayPort),
+		"update_channel": s.UpdateChannel,
 	}
 	for k, v := range pairs {
 		if _, err := tx.Exec(
