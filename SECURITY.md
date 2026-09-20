@@ -21,11 +21,9 @@ If you suspect you leaked something: rotate/revoke the credential immediately at
 
 ## Reporting a vulnerability
 
-There is no private security contact or security email yet.
+Do not report security vulnerabilities through public GitHub Issues.
 
-Do not use public Issues for vulnerability details that could put accounts or tokens at risk. A private reporting channel will be documented here before the first runnable release.
-
-Until then: for anything time-sensitive, open a minimal public issue that describes the area affected without exploit details or credentials, and the maintainer will follow up on how to share details privately.
+Use GitHub's private vulnerability reporting for this repository via the Security tab / "Report a vulnerability".
 
 ## Local handling expectations
 

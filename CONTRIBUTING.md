@@ -2,12 +2,21 @@
 
 Thanks for your interest. The project is in early scaffold stage — no implementation yet.
 
+## Current policy
+
+- Documentation fixes are welcome.
+- Bug reports and feature discussions are welcome.
+- External implementation/code contributions are temporarily not accepted.
+- The contributor licensing / relicensing policy will be established before external code contributions are accepted.
+
 ## Workflow
 
-1. Fork the repo and create a focused branch (`feat/...`, `fix/...`, `chore/...`, `docs/...`).
+For in-scope contributions (docs fixes, reports, discussions):
+
+1. Fork the repo and create a focused branch (`fix/...`, `chore/...`, `docs/...`).
 2. Keep commits small and meaningful, with clear messages.
 3. Open a PR against the appropriate branch describing the summary, why, and how it was verified.
-4. Discuss substantial architectural changes in an issue before writing code.
+4. Discuss substantial architectural changes in an issue before writing anything.
 
 ## Rules
 

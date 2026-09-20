@@ -4,7 +4,7 @@ Load balancer and OpenAI-compatible proxy for pooled AI coding accounts.
 
 > **Status: early development, not yet runnable.** There is no working load balancer here yet — this repository currently holds only the project scaffold (docs, license, contribution basics). Everything below describes intent, not implemented behavior.
 
-**License:** source-available under [PolyForm Noncommercial 1.0.0](LICENSE) — see [NOTICE](NOTICE). Noncommercial use, modification, and distribution are permitted with attribution; commercial use requires separate written permission.
+**License:** source-available under [PolyForm Noncommercial 1.0.0](LICENSE) — see [NOTICE](NOTICE). Noncommercial use and modification are permitted under the PolyForm Noncommercial License 1.0.0. Redistributed copies must retain the applicable license terms or license URL and all Required Notice lines. Commercial use requires separate written permission from the copyright holder.
 
 ## What is ai-lb?
 
@@ -85,7 +85,7 @@ Rules that already apply to this repository, even before any code exists:
 - Never paste them into GitHub Issues, PRs, logs, or screenshots.
 - Use `.env.example`-style placeholders if example config is ever added.
 
-See [SECURITY.md](SECURITY.md) for the full policy. A private vulnerability-reporting channel will be documented before the first release.
+See [SECURITY.md](SECURITY.md) for the full policy, including private vulnerability reporting.
 
 ## Project status
 
@@ -105,7 +105,7 @@ Once implementation starts, this section will document prerequisites, checks, an
 
 ## Contributing
 
-Small, focused contributions to docs and scaffold are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Documentation fixes, bug reports, and feature discussions are welcome. External implementation/code contributions are temporarily not accepted until the contributor licensing / relicensing policy is established. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Do not include secrets or account data in issues or PRs. Larger architectural changes are best discussed in an issue first.
 
@@ -120,7 +120,7 @@ These projects are inspiration and architectural/UX references only. No code, RE
 
 Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
-You may use, modify, and distribute this project for noncommercial purposes with attribution. Commercial use requires separate written permission from the copyright holder — see [NOTICE](NOTICE):
+Noncommercial use and modification are permitted under the PolyForm Noncommercial License 1.0.0. Redistributed copies must retain the applicable license terms or license URL and all Required Notice lines. Commercial use requires separate written permission from the copyright holder — see [NOTICE](NOTICE):
 
 ```text
 Required Notice: Copyright 2026 Dustin Corder
