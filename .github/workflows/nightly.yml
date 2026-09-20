@@ -1,0 +1,89 @@
+name: nightly
+
+# Nightly channel: every main commit may produce one immutable nightly
+# prerelease with a unique commit-bound tag. Never runs from PRs or
+# feature branches. Old nightlies are pruned; stable releases and
+# drafts are never touched.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    name: nightly prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+
+      - run: go test ./...
+      - run: go vet ./...
+
+      - name: Create nightly tag
+        id: tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          SHA="$(git rev-parse --short HEAD)"
+          BASE="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+          if [ -z "$BASE" ]; then
+            BASE="v0.0.0"
+          fi
+          TAG="${BASE}-${SHA}-nightly"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; refusing to overwrite a published nightly."
+            exit 1
+          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.18.2
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: nightly
+
+      - name: Ensure prerelease flag
+        run: gh release edit "${{ steps.tag.outputs.tag }}" --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune old nightlies (keep latest 10)
+        run: |
+          gh release list --limit 100 \
+            --json tagName,isDraft,isPrerelease,publishedAt \
+            --jq '[.[] | select(.isPrerelease and (.isDraft | not) and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-[0-9a-f]+-nightly$")))] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
+            | while IFS= read -r tag; do
+                if [ -n "$tag" ]; then
+                  echo "Deleting old nightly $tag"
+                  gh release delete "$tag" --cleanup-tag --yes
+                fi
+              done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,7 +2,10 @@
 
 Load balancer and OpenAI-compatible proxy for pooled AI coding accounts.
 
-> **Status: early development, not yet runnable.** There is no working load balancer here yet — this repository currently holds only the project scaffold (docs, license, contribution basics). Everything below describes intent, not implemented behavior.
+> **Status: foundation only, not a working load balancer yet.** The Go web
+> service foundation runs (control server + gateway listener + embedded web
+> UI + SQLite settings). Everything provider-related below is still intent,
+> not implemented behavior.
 
 **License:** source-available under [PolyForm Noncommercial 1.0.0](LICENSE) — see [NOTICE](NOTICE). Noncommercial use and modification are permitted under the PolyForm Noncommercial License 1.0.0. Redistributed copies must retain the applicable license terms or license URL and all Required Notice lines. Commercial use requires separate written permission from the copyright holder.
 
@@ -26,6 +29,71 @@ Concretely, the goal is:
 6. ai-lb picks a suitable account per request and handles routing / load balancing.
 
 Nothing in steps 1–6 is implemented yet.
+
+## Current state
+
+Implemented:
+
+- Go service foundation (single `ai-lb` executable, no Node.js runtime needed)
+- Embedded web UI (React + TypeScript + Vite build served by the control server)
+- Control server (`http://127.0.0.1:8317` by default): web UI + management API
+- Gateway listener (`http://127.0.0.1:8318` by default, `GET /health` only)
+- SQLite settings (auto-created, migrated, validated; ports editable in the UI)
+
+Not implemented:
+
+- Codex integration
+- Antigravity integration
+- Routing / load balancing
+- Quota tracking
+- CLI switching
+- OpenAI-compatible endpoints
+- API access manager (clients, keys, policies)
+
+## Running it
+
+```bash
+go build -o ai-lb ./cmd/ai-lb
+./ai-lb
+```
+
+- Open `http://127.0.0.1:8317` for the web UI.
+- `curl http://127.0.0.1:8318/health` should return `{"status":"ok"}`.
+- Change ports in Settings; restart the service for new ports to take effect.
+- The backend keeps running with no browser window open.
+
+## Release channels
+
+Two application update channels exist (no separate branches):
+
+- **Stable** (default): only versioned production releases (`v0.1.0`,
+  `v0.2.0`, …). Stable releases are immutable, non-prerelease GitHub
+  Releases.
+- **Nightly**: one immutable prerelease per `main` commit
+  (`v0.2.0-a1b2c3d-nightly`), plus newer stable releases when applicable.
+  Nightly builds track development and are not recommended for routine use.
+
+Switch channels in Settings → Update channel. The service checks for
+updates in the background after startup (never blocking, never fatal
+offline) and shows a banner when an update is available. "Download
+update" fetches the artifact for your platform and verifies its SHA-256
+checksum — it never replaces the running binary or installs packages.
+
+Supported release artifacts:
+
+- Linux raw binary/archive (`amd64`, `arm64`)
+- Debian/Ubuntu `.deb` (`amd64`, `arm64`, installs to `/usr/bin/ai-lb`)
+- Fedora/RHEL `.rpm` (`x86_64`, `aarch64`)
+- Arch Linux package (`.pkg.tar.zst`, `x86_64` and `aarch64`)
+- Windows archive (`amd64`, `arm64`)
+- macOS archive (`amd64`, `arm64`)
+- `checksums.txt` (SHA-256 for every artifact)
+
+No code signing or notarization exists yet; releases are checksum-verified
+but not signed. Linux packages install the binary only — there is no
+installer logic, no systemd service, and no apt/yum/pacman repository;
+packages are downloaded from GitHub Releases. Package-aware self-update
+is future work.
 
 ## How it is intended to work
 
@@ -67,13 +135,24 @@ The scope will be narrowed once implementation starts. Nothing here is a promise
 
 The intent is for ai-lb to expose OpenAI-compatible endpoints (such as chat/completions-style routes and model listing) so existing clients work without custom integrations.
 
-No endpoints exist yet, and no base URL, port, key format, or model names are defined. Client setup guides will be added once the first runnable version lands.
+No OpenAI-compatible inference endpoints are implemented yet.
+The current gateway exposes only `GET /health` on the configured gateway
+listener (`http://127.0.0.1:8318` by default). Client setup guides will be
+added once the first runnable version lands.
 
 ## Architecture
 
-No code, no final tech stack, no directory layout to document yet.
+Runtime foundation (implemented): a Go service with two loopback-only
+listeners — a control server (browser web UI + management API) and a
+gateway listener (data plane). The web UI build is embedded in the binary.
+SQLite holds settings and app metadata in the OS-appropriate app data
+directory. See [ARCHITECTURE.md](ARCHITECTURE.md) and
+[docs/RFC-0001-v0.1.md](docs/RFC-0001-v0.1.md) for the full direction,
+including the future common router over Codex/Antigravity pools.
 
-The only decision recorded so far: keep the core provider-neutral and isolate provider specifics in adapters. Details (language, storage, API framework, config format) are unresolved and will be documented when chosen.
+Design decisions that still stand: keep the core provider-neutral and
+isolate provider specifics in adapters; local-first credential and state
+storage.
 
 ## Security
 
@@ -89,9 +168,10 @@ See [SECURITY.md](SECURITY.md) for the full policy, including private vulnerabil
 
 ## Project status
 
-- Scaffold only: `README.md`, `LICENSE` (PolyForm Noncommercial 1.0.0), `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `.gitignore`, `.editorconfig`, PR template.
-- No implementation, no binaries, no packages, no releases, no changelog yet.
-- Tech stack and milestones are undecided.
+- Foundation: Go service (`cmd/ai-lb`, `internal/…`), React web UI (`web/`), SQLite settings.
+- Docs: `ARCHITECTURE.md`, `docs/RFC-0001-v0.1.md` (provider/routing design is future direction).
+- Legal/scaffold: `LICENSE` (PolyForm Noncommercial 1.0.0), `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `.gitignore`, `.editorconfig`, PR template.
+- No provider integrations, no releases, no changelog yet.
 
 ### Installation
 
@@ -99,9 +179,22 @@ ai-lb is currently in early development. Installation instructions will be added
 
 ## Development
 
-There is nothing to build, test, or run yet.
+Prerequisites: Go toolchain, Node.js + npm.
 
-Once implementation starts, this section will document prerequisites, checks, and the canonical workflow. Until then, see [CONTRIBUTING.md](CONTRIBUTING.md) for the basic fork/branch expectations.
+```bash
+go test ./...
+go vet ./...
+```
+
+```bash
+npm --prefix web install
+npm --prefix web run lint
+npm --prefix web run test
+npm --prefix web run build   # required before the production Go build
+go build -o ai-lb ./cmd/ai-lb
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution policy.
 
 ## Contributing
 
