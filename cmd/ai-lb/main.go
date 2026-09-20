@@ -25,7 +25,6 @@ func main() {
 }
 
 func run() error {
-	defaults := config.Defaults()
 	var (
 		dataDir     = flag.String("data-dir", "", "data directory (default: OS app data dir)")
 		controlHost = flag.String("control-host", "", "control bind host, loopback only (default from settings)")
@@ -35,24 +34,25 @@ func run() error {
 	)
 	flag.Parse()
 
-	// Flag overrides apply to this run; PUT /api/settings persists.
-	useOverrides := *controlHost != "" || *controlPort != 0 || *gatewayHost != "" || *gatewayPort != 0
-	overrides := defaults
+	// Flag overrides apply to this run only; PUT /api/settings persists.
+	// A zero flag value means "not supplied" (port 0 and empty host are
+	// invalid settings anyway).
+	var overrides config.Overrides
 	if *controlHost != "" {
-		overrides.ControlHost = *controlHost
+		overrides.ControlHost = controlHost
 	}
 	if *controlPort != 0 {
-		overrides.ControlPort = *controlPort
+		overrides.ControlPort = controlPort
 	}
 	if *gatewayHost != "" {
-		overrides.GatewayHost = *gatewayHost
+		overrides.GatewayHost = gatewayHost
 	}
 	if *gatewayPort != 0 {
-		overrides.GatewayPort = *gatewayPort
+		overrides.GatewayPort = gatewayPort
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return app.Run(ctx, *dataDir, overrides, useOverrides)
+	return app.Run(ctx, *dataDir, overrides)
 }

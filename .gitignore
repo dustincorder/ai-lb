@@ -1,7 +1,10 @@
 # Build outputs
 /ai-lb
 /ai-lb.exe
-web/dist/
+# Frontend build output is generated (npm --prefix web run build) and
+# embedded into the Go binary. Only the placeholder is tracked so that
+# clean checkouts still compile and test the backend.
+web/dist/*
 !web/dist/.gitkeep
 web/node_modules/
 

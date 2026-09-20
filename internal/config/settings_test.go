@@ -43,3 +43,68 @@ func TestValidateHostLoopbackOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsListenerCollision(t *testing.T) {
+	colliding := Settings{
+		ControlHost: "127.0.0.1",
+		ControlPort: 9000,
+		GatewayHost: "127.0.0.1",
+		GatewayPort: 9000,
+	}
+	if err := Validate(colliding); err == nil {
+		t.Error("identical control/gateway bind addresses should be rejected")
+	}
+	distinct := Settings{
+		ControlHost: "127.0.0.1",
+		ControlPort: 9000,
+		GatewayHost: "127.0.0.1",
+		GatewayPort: 9001,
+	}
+	if err := Validate(distinct); err != nil {
+		t.Errorf("distinct ports should be valid: %v", err)
+	}
+	// Different loopback IPs sharing a port bind independently.
+	splitLoopback := Settings{
+		ControlHost: "127.0.0.1",
+		ControlPort: 9000,
+		GatewayHost: "127.0.0.2",
+		GatewayPort: 9000,
+	}
+	if err := Validate(splitLoopback); err != nil {
+		t.Errorf("different loopback IPs on one port should be valid: %v", err)
+	}
+}
+
+func TestOverridesApplyPartial(t *testing.T) {
+	base := Settings{
+		ControlHost: "127.0.0.1",
+		ControlPort: 8401,
+		GatewayHost: "127.0.0.1",
+		GatewayPort: 8402,
+	}
+	gw := 9000
+	out, err := Overrides{GatewayPort: &gw}.Apply(base)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if out.ControlPort != 8401 || out.GatewayPort != 9000 {
+		t.Errorf("partial override misapplied: %+v", out)
+	}
+	if out.ControlHost != base.ControlHost || out.GatewayHost != base.GatewayHost {
+		t.Errorf("unset overrides must preserve base: %+v", out)
+	}
+	// Empty overrides are identity.
+	same, err := Overrides{}.Apply(base)
+	if err != nil || same != base {
+		t.Errorf("empty overrides should be identity: %+v, %v", same, err)
+	}
+	// Invalid overrides fail instead of producing a bad active config.
+	bad := 0
+	if _, err := (Overrides{ControlPort: &bad}).Apply(base); err == nil {
+		t.Error("port 0 override should be rejected")
+	}
+	collide := 8401
+	if _, err := (Overrides{GatewayPort: &collide}).Apply(base); err == nil {
+		t.Error("colliding override should be rejected")
+	}
+}

@@ -31,7 +31,10 @@ type App struct {
 // Run opens the database, loads settings, binds both listeners, and
 // serves until ctx is cancelled. Listeners bind before serving so a busy
 // port fails fast with a clear error instead of a half-started service.
-func Run(ctx context.Context, dataDir string, overrides config.Settings, useOverrides bool) error {
+//
+// The active settings for this run are the persisted settings with CLI
+// overrides applied in memory. Overrides never rewrite SQLite.
+func Run(ctx context.Context, dataDir string, overrides config.Overrides) error {
 	database, err := db.Open(dataDir)
 	if err != nil {
 		return fmt.Errorf("database: %w", err)
@@ -41,13 +44,10 @@ func Run(ctx context.Context, dataDir string, overrides config.Settings, useOver
 		database.Close()
 		return fmt.Errorf("settings: %w", err)
 	}
-	settings := stored
-	if useOverrides {
-		settings = overrides
-		if err := config.Validate(settings); err != nil {
-			database.Close()
-			return fmt.Errorf("settings override: %w", err)
-		}
+	settings, err := overrides.Apply(stored)
+	if err != nil {
+		database.Close()
+		return fmt.Errorf("settings: %w", err)
 	}
 
 	a := &App{DB: database}
@@ -67,8 +67,19 @@ func Run(ctx context.Context, dataDir string, overrides config.Settings, useOver
 			config.Addr(settings.GatewayHost, settings.GatewayPort), err)
 	}
 
-	a.control = &http.Server{Handler: control.New(database, a.currentSettings)}
-	a.gateway = &http.Server{Handler: gateway.New()}
+	a.control = &http.Server{
+		Handler:           control.New(database, a.currentSettings),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	// No WriteTimeout on the gateway: a global write deadline would break
+	// future streaming responses. Slowloris protection comes from
+	// ReadHeaderTimeout; per-route policy arrives with the proxy.
+	a.gateway = &http.Server{
+		Handler:           gateway.New(),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- a.control.Serve(controlListener) }()

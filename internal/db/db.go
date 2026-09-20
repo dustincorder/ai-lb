@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"modernc.org/sqlite"
 
@@ -22,16 +23,23 @@ func init() {
 	sql.Register("ailb_sqlite", &sqlite.Driver{})
 }
 
-// schemaMigrations are applied in order. user_version tracks the level.
+// schemaMigrations are applied exactly once each, in order.
+// user_version tracks how many have been applied. Add new statements by
+// appending; never edit an applied migration in place.
 var schemaMigrations = []string{
-	`CREATE TABLE IF NOT EXISTS settings (
+	`CREATE TABLE settings (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
-	`CREATE TABLE IF NOT EXISTS app_metadata (
+	`CREATE TABLE app_metadata (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+}
+
+// schemaVersion is the number of migrations this binary knows.
+func schemaVersion() int {
+	return len(schemaMigrations)
 }
 
 // DB wraps the SQLite connection with the resolved file path.
@@ -88,6 +96,10 @@ func Open(dir string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	d := &DB{Conn: conn, Path: path}
+	if err := d.enableWAL(); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	if err := d.migrate(); err != nil {
 		conn.Close()
 		return nil, err
@@ -108,21 +120,58 @@ func (d *DB) Close() error {
 	return d.Conn.Close()
 }
 
-func (d *DB) migrate() error {
-	tx, err := d.Conn.Begin()
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
+// enableWAL switches the database to WAL mode as required by the
+// architecture and verifies the mode actually took effect.
+func (d *DB) enableWAL() error {
+	var mode string
+	if err := d.Conn.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+		return fmt.Errorf("enable WAL: %w", err)
 	}
-	defer tx.Rollback()
-	for i, stmt := range schemaMigrations {
-		if _, err := tx.Exec(stmt); err != nil {
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("journal mode is %q, expected wal", mode)
+	}
+	return nil
+}
+
+// currentVersion reads PRAGMA user_version (0 for a fresh database).
+func (d *DB) currentVersion() (int, error) {
+	var version int
+	if err := d.Conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	return version, nil
+}
+
+// migrate applies only migrations newer than the stored user_version,
+// one transaction per migration with the version bump inside. A database
+// newer than this binary fails closed instead of being touched.
+func (d *DB) migrate() error {
+	version, err := d.currentVersion()
+	if err != nil {
+		return err
+	}
+	if version > schemaVersion() {
+		return fmt.Errorf("database schema version %d is newer than this binary supports (%d)",
+			version, schemaVersion())
+	}
+	for i := version; i < schemaVersion(); i++ {
+		tx, err := d.Conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(schemaMigrations[i]); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("migration %d: %w", i+1, err)
 		}
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record schema version %d: %w", i+1, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", i+1, err)
+		}
 	}
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(schemaMigrations))); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
-	}
-	return tx.Commit()
+	return nil
 }
 
 // validate runs startup checks: foreign keys on, expected tables exist,
@@ -148,8 +197,8 @@ func (d *DB) validate() error {
 	if err := d.Conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("check schema version: %w", err)
 	}
-	if version != len(schemaMigrations) {
-		return fmt.Errorf("schema version %d, expected %d", version, len(schemaMigrations))
+	if version != schemaVersion() {
+		return fmt.Errorf("schema version %d, expected %d", version, schemaVersion())
 	}
 	return nil
 }

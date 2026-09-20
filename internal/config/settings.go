@@ -70,7 +70,57 @@ func Validate(s Settings) error {
 	if err := ValidatePort(s.GatewayPort); err != nil {
 		return fmt.Errorf("gateway_port: %w", err)
 	}
+	if sameBindAddress(s.ControlHost, s.ControlPort, s.GatewayHost, s.GatewayPort) {
+		return fmt.Errorf("control and gateway listeners collide on %s",
+			Addr(s.ControlHost, s.ControlPort))
+	}
 	return nil
+}
+
+// sameBindAddress reports whether two listener addresses would compete
+// for the same socket. Different loopback IPs sharing a port are allowed
+// where the OS binds them independently.
+func sameBindAddress(hostA string, portA int, hostB string, portB int) bool {
+	if portA != portB {
+		return false
+	}
+	ipA := net.ParseIP(hostA)
+	ipB := net.ParseIP(hostB)
+	if ipA == nil || ipB == nil {
+		return hostA == hostB
+	}
+	return ipA.Equal(ipB)
+}
+
+// Overrides carries explicitly supplied CLI flag values. Nil means "flag
+// not given": the persisted setting survives for this run.
+type Overrides struct {
+	ControlHost *string
+	ControlPort *int
+	GatewayHost *string
+	GatewayPort *int
+}
+
+// Apply overlays the non-nil overrides onto base without touching
+// persistence. The result is validated before use.
+func (o Overrides) Apply(base Settings) (Settings, error) {
+	out := base
+	if o.ControlHost != nil {
+		out.ControlHost = *o.ControlHost
+	}
+	if o.ControlPort != nil {
+		out.ControlPort = *o.ControlPort
+	}
+	if o.GatewayHost != nil {
+		out.GatewayHost = *o.GatewayHost
+	}
+	if o.GatewayPort != nil {
+		out.GatewayPort = *o.GatewayPort
+	}
+	if err := Validate(out); err != nil {
+		return base, err
+	}
+	return out, nil
 }
 
 // Addr formats host:port for net.Listen / http.Server.

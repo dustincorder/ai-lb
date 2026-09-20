@@ -102,7 +102,10 @@ The scope will be narrowed once implementation starts. Nothing here is a promise
 
 The intent is for ai-lb to expose OpenAI-compatible endpoints (such as chat/completions-style routes and model listing) so existing clients work without custom integrations.
 
-No endpoints exist yet, and no base URL, port, key format, or model names are defined. Client setup guides will be added once the first runnable version lands.
+No OpenAI-compatible inference endpoints are implemented yet.
+The current gateway exposes only `GET /health` on the configured gateway
+listener (`http://127.0.0.1:8318` by default). Client setup guides will be
+added once the first runnable version lands.
 
 ## Architecture
 
