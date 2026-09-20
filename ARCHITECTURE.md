@@ -84,7 +84,7 @@ policies and usage records.
 | CLI Manager | Safe `activateAccount` transaction per provider: validate → backup → stop/reload → activate → restart → verify → rollback on failure |
 | Provider adapters | `CodexAdapter`, `AntigravityAdapter` implementing the shared `ProviderAdapter` contract with per-provider capabilities |
 | Local API Gateway | Loopback OpenAI-compatible HTTP API; key auth, policy checks, deterministic routing, retry/failover, streaming, usage accounting |
-| API Access Manager | `ApiClient` / `ApiKey` / `AccessPolicy` / `UsageRecord`; rotation via multiple keys per client; prefix+hash storage, show-once secrets |
+| API Access Manager | `ApiClient` / `ApiKey` / `AccessPolicy` / `UsageRecord`; rotation via multiple keys per client; prefix+verifier storage, show-once secrets |
 | Quota refresher | Periodic, per-account quota/subscription polling with backoff; marks snapshots stale on failure |
 | Process manager | Detects, stops, starts, and verifies official client processes; owns client-state backup/restore |
 
@@ -104,8 +104,14 @@ credential locations and quota mappings are discovered at implementation time).
   policies, usage records (no prompt/response bodies by default).
 - **OS credential storage** (macOS Keychain, Windows Credential Manager, Linux
   Secret Service/keyring) holds OAuth/API token material behind
-  `SecretStore { put, get, delete }`.
-- Local API keys are generated server-side, shown once, stored as hash.
+  `SecretStore { put, get, delete }`. No supported store means fail closed:
+  secret persistence is unavailable and the GUI explains why. No custom
+  encrypted secret file in v0.1.
+- The gateway resolves pooled credentials through short-lived in-memory
+  credential sessions over `SecretStore` — never an OS keychain lookup per
+  HTTP request, never secrets in SQLite.
+- Local API keys are generated server-side, shown once, stored as SHA-256
+  verifier (constant-time compare, no password KDF).
 - Request authorization runs fully **before** upstream routing:
   authenticate → enabled/expiry → IP policy → rate → concurrency →
   token/budget → model/pool policy → routing → upstream.
@@ -113,13 +119,17 @@ credential locations and quota mappings are discovered at implementation time).
 ## 7. Local API
 
 - Default `http://127.0.0.1:<port>/v1`, loopback-only in v0.1.
-- Target routes: `/v1/models`, `/v1/responses`, with room for further
-  OpenAI-compatible routes later. Route names are direction, not promises.
+- v0.1 compatibility target: model listing (`/v1/models`), Responses API
+  (`/v1/responses`), and Chat Completions (`/v1/chat/completions`) surfaces
+  required by common coding clients. Further routes are added explicitly;
+  unknown `/v1/*` routes get a controlled unsupported-route response, never
+  a blind pass-through. Route names are direction, not promises.
 - Provider-aware and quota-aware deterministic routing:
-  enabled → healthy → quota available → cooldown expired → session affinity →
-  priority/available quota → select. Retry and failover across accounts with
-  per-account cooldown; streaming passed through; every request accounted as
-  a provider-neutral `RequestUsage` record.
+  enabled → healthy → quota available → cooldown expired → session affinity
+  (stable session identifier only) → priority/available quota → select.
+  Safe retry and failover only (never after ambiguous sends or into an
+  exposed stream), per-account cooldown; streaming passed through; every
+  request accounted as a provider-neutral `RequestUsage` record.
 
 ## 8. API access management
 
