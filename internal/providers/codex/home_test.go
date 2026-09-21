@@ -3,6 +3,7 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -50,6 +51,9 @@ func splitLines(s string) []string {
 }
 
 func TestManagedHomePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not honor Unix mode bits; managed homes live under the user profile, which is ACL-isolated per user")
+	}
 	dir := t.TempDir()
 	home, err := ManagedHome(dir, "acc-1")
 	if err != nil {
