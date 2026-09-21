@@ -126,8 +126,9 @@ allowed only where request/model capabilities match the account pool.
 | Control server + web UI | Implemented (serves UI, settings API, accounts API, gateway liveness proxy) |
 | Gateway listener | Implemented as liveness only (`GET /health`) |
 | SQLite settings store | Implemented (migrations, WAL, validation) |
-| Account profiles + provider registry | Implemented as local metadata (CRUD, `enabled` flag, `connected` derived from `credentials_ref`); no auth, quota, or adapter exists — no `CodexAdapter` is implemented |
-| SecretStore contract | Implemented as interface + fail-closed production store + in-memory test store; OS keychain backends are future |
+| Account profiles + provider registry | Implemented as local metadata (CRUD, `enabled` flag, `connected` derived from `credentials_ref`) |
+| Codex integration | Implemented: official `codex app-server` stdio client (initialize, account/read, login/start/cancel, logout, rateLimits/read); per-account isolated `CODEX_HOME` with keyring-only storage; browser + device login sessions; disconnect with verification; quota snapshots. No `~/.codex` access, no token handling, no gateway use |
+| SecretStore contract | Implemented as interface + fail-closed production store + in-memory test store; OS keychain backends are future. Codex credentials are provider-owned (Codex-managed keyring storage), so `credentials_ref` is an opaque binding (`codex-managed:<id>`), not necessarily a SecretStore key |
 | Account Manager | Future: CRUD for pooled accounts; plan/subscription, quota windows, health; pool participation flags |
 | CLI Manager | Future: safe `activateAccount` transaction (validate → backup → stop/reload → activate → restart → verify → rollback) |
 | Provider adapters | Future: `CodexAdapter`, `AntigravityAdapter` behind the shared contract |
@@ -154,10 +155,14 @@ time and stay inside the adapter.
   Future rule, fixed now: AccountService will orchestrate credential
   deletion/reconciliation when real secret persistence arrives — SQLite
   and SecretStore deletes are not one atomic transaction.
-- **Provider registry** (`codex`, `antigravity`, both
-  `implemented: false`) gates account creation server-side; the real
-  ProviderAdapter contract is deferred until the first actual
-  integration — no adapter interface is frozen in code yet.
+- **Provider registry** (`codex` integrated, `antigravity` planned)
+  gates account creation server-side; Codex routes are provider-scoped
+  (`/api/.../codex/...`), never a premature generic adapter.
+- **Codex credential rule (decided):** integration uses the official
+  app-server only. ai-lb does not scrape `auth.json` or own ChatGPT
+  refresh tokens. Managed accounts use isolated `CODEX_HOME` homes with
+  keyring-only auth storage; ai-lb-owned SecretStore stays for future
+  providers where ai-lb itself owns opaque secret material.
 - **OS credential storage** (macOS Keychain, Windows Credential Manager,
   Linux Secret Service/keyring) holds OAuth/API token material behind
   `SecretStore { put, get, delete }`. No supported store means fail

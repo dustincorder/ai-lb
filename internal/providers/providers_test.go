@@ -13,8 +13,8 @@ func TestRegistryContents(t *testing.T) {
 		if d.ID != id || d.DisplayName == "" {
 			t.Errorf("bad descriptor: %+v", d)
 		}
-		if d.Implemented {
-			t.Errorf("provider %q must report implemented=false until a real integration lands", id)
+		if want := id == Codex; d.Implemented != want {
+			t.Errorf("provider %q implemented = %v, want %v", id, d.Implemented, want)
 		}
 	}
 	if r.Known("banana-ai") {

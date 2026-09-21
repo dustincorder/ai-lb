@@ -8,6 +8,7 @@ import {
   type Account,
   type Provider,
 } from '../api'
+import { CodexAccount } from '../CodexAccount'
 
 export function Accounts() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -164,6 +165,9 @@ export function Accounts() {
                     <button type="button" onClick={() => void onToggle(a)}>
                       {a.enabled ? 'Disable' : 'Enable'}
                     </button>{' '}
+                    {a.provider === 'codex' && (
+                      <CodexAccount account={a} onChanged={() => void reload()} />
+                    )}
                     {confirmDeleteId === a.id ? (
                       <span>
                         Delete this account?{' '}

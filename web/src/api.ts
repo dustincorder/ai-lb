@@ -164,3 +164,98 @@ export async function deleteAccount(id: string): Promise<void> {
   const res = await fetch(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (res.status !== 204) await check(res)
 }
+
+export interface CodexProviderStatus {
+  installed: boolean
+  path?: string
+  version?: string
+  app_server_compatible: boolean
+  error?: string
+}
+
+export interface CodexQuotaWindow {
+  limit_id?: string
+  limit_name?: string
+  used_percent?: number
+  remaining_percent?: number
+  window_duration_minutes?: number
+  reset_at?: number
+}
+
+export interface CodexQuota {
+  windows: CodexQuotaWindow[]
+  updated_at: string
+  stale: boolean
+}
+
+export interface CodexStatus {
+  connected: boolean
+  auth_mode?: string
+  email?: string
+  plan_type?: string
+  requires_openai_auth: boolean
+  quota?: CodexQuota
+  observed_at: string
+}
+
+export interface CodexLogin {
+  account_id: string
+  login_id: string
+  method: string
+  state: string
+  auth_url?: string
+  verification_url?: string
+  user_code?: string
+  error?: string
+  started_at: string
+}
+
+export async function fetchCodexProviderStatus(): Promise<CodexProviderStatus> {
+  const res = await check(await fetch('/api/providers/codex/status'))
+  return (await res.json()) as CodexProviderStatus
+}
+
+export async function startCodexLogin(id: string, method: 'browser' | 'device'): Promise<CodexLogin> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method }),
+    }),
+  )
+  return (await res.json()) as CodexLogin
+}
+
+export async function fetchCodexLogin(id: string): Promise<CodexLogin> {
+  const res = await check(await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/login`))
+  return (await res.json()) as CodexLogin
+}
+
+export async function cancelCodexLogin(id: string, loginId?: string): Promise<CodexLogin> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/login`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(loginId ? { login_id: loginId } : {}),
+    }),
+  )
+  return (await res.json()) as CodexLogin
+}
+
+export async function fetchCodexStatus(id: string): Promise<CodexStatus> {
+  const res = await check(await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/status`))
+  return (await res.json()) as CodexStatus
+}
+
+export async function refreshCodexQuota(id: string): Promise<CodexQuota> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/refresh`, { method: 'POST' }),
+  )
+  return (await res.json()) as CodexQuota
+}
+
+export async function logoutCodex(id: string): Promise<void> {
+  await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/logout`, { method: 'POST' }),
+  )
+}

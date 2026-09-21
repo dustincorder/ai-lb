@@ -39,18 +39,22 @@ Implemented:
 - Control server (`http://127.0.0.1:8317` by default): web UI + management API
 - Gateway listener (`http://127.0.0.1:8318` by default, `GET /health` only)
 - SQLite settings (auto-created, migrated, validated; ports editable in the UI)
-- Provider registry (`codex`, `antigravity`; both report not-implemented)
+- Provider registry (`codex` integrated, `antigravity` planned)
 - Account profile CRUD via API and Accounts UI (local profiles with labels)
+- Codex CLI detection + managed Codex account login (browser / device code)
+- Isolated `CODEX_HOME` per account with keyring-only credential storage
+- Codex-owned OS keyring credentials (ai-lb never reads tokens or `auth.json`)
+- Account/plan read + rate limits + disconnect
 - SecretStore abstraction with a fail-closed production placeholder
+  (for future providers where ai-lb itself owns secret material)
 
 Not implemented:
 
-- Real provider authentication (accounts created now are local profiles
-  only and are not authenticated with Codex or Antigravity yet)
-- Credential import, OAuth, or login flows
-- Quota tracking
-- CLI switching
-- Routing / load balancing
+- Real provider authentication for Antigravity
+- Import of the existing default Codex account (`~/.codex` untouched)
+- Official CLI switching
+- Automatic quota refresh
+- Routing / load balancing (pool routing, gateway use)
 - OpenAI-compatible endpoints
 - API access manager (clients, keys, policies)
 

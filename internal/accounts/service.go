@@ -136,6 +136,41 @@ func (s *Service) List(ctx context.Context) ([]Account, error) {
 	return s.repo.List(ctx)
 }
 
+// SetCredentialBinding links (ref != "") or unlinks (ref == "") the
+// secret-store reference of a profile. Reserved for provider
+// integrations after they safely persist a secret; the public
+// management API has no path to this method.
+func (s *Service) SetCredentialBinding(ctx context.Context, id, ref string) error {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return err
+	}
+	return s.repo.SetCredentialsRef(ctx, id, ref, s.Now().UTC())
+}
+
+// SyncProviderIdentity adopts a provider-reported identity (e.g. the
+// email from account/read) without touching provider or label. Empty
+// values leave the stored identity unchanged instead of writing garbage.
+func (s *Service) SyncProviderIdentity(ctx context.Context, id, identity string) (Account, error) {
+	a, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Account{}, err
+	}
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return a, nil
+	}
+	if len([]rune(identity)) > MaxIdentityLength {
+		return Account{}, &ValidationError{Field: "identity", Message: "provider identity exceeds limit"}
+	}
+	a.Identity = identity
+	a.UpdatedAt = s.Now().UTC()
+	updated, err := s.repo.Update(ctx, a)
+	if err != nil {
+		return Account{}, err
+	}
+	return updated, nil
+}
+
 // Delete removes the metadata row of an unconnected profile. A connected
 // profile (credentials_ref set) is refused with ErrConnected: deleting
 // metadata while leaving a credential reference/secret orphaned would be

@@ -49,12 +49,13 @@ type Server struct {
 	Updates   *update.Checker
 	Accounts  *accounts.Service
 	Providers *providers.Registry
+	Codex     codexBackend
 	mux       *http.ServeMux
 }
 
 // New builds the control server routes. active reports the settings the
 // running listeners bound; the database holds the configured settings.
-func New(database *db.DB, active func() config.Settings, current build.Info, acc *accounts.Service, registry *providers.Registry) *Server {
+func New(database *db.DB, active func() config.Settings, current build.Info, acc *accounts.Service, registry *providers.Registry, codexSvc codexBackend) *Server {
 	s := &Server{
 		DB:        database,
 		Active:    active,
@@ -62,6 +63,7 @@ func New(database *db.DB, active func() config.Settings, current build.Info, acc
 		Updates:   update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
 		Accounts:  acc,
 		Providers: registry,
+		Codex:     codexSvc,
 		mux:       http.NewServeMux(),
 	}
 	s.mux.HandleFunc("/api/health", s.handleHealth)
@@ -72,8 +74,13 @@ func New(database *db.DB, active func() config.Settings, current build.Info, acc
 	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/update/download", s.handleUpdateDownload)
 	s.mux.HandleFunc("/api/providers", s.handleProviders)
+	s.mux.HandleFunc("/api/providers/codex/status", s.handleCodexProviderStatus)
 	s.mux.HandleFunc("/api/accounts", s.handleAccounts)
 	s.mux.HandleFunc("/api/accounts/{id}", s.handleAccount)
+	s.mux.HandleFunc("/api/accounts/{id}/codex/login", s.handleCodexLogin)
+	s.mux.HandleFunc("/api/accounts/{id}/codex/status", s.handleCodexStatus)
+	s.mux.HandleFunc("/api/accounts/{id}/codex/refresh", s.handleCodexRefresh)
+	s.mux.HandleFunc("/api/accounts/{id}/codex/logout", s.handleCodexLogout)
 	s.mux.HandleFunc("/", s.handleUI)
 	return s
 }
