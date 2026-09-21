@@ -129,7 +129,12 @@ func Run(ctx context.Context, opts Options, cfg RunConfig) error {
 	case err := <-done:
 		return processResult(err)
 	case <-ctx.Done():
-		_ = cmd.Process.Signal(os.Interrupt)
+		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+			// Windows does not implement os.Interrupt for arbitrary child
+			// processes; kill immediately rather than leaving the launcher
+			// blocked until the orphan-prevention timeout.
+			_ = cmd.Process.Kill()
+		}
 		select {
 		case err := <-done:
 			return processResult(err)

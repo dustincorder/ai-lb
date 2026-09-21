@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -142,6 +143,12 @@ func TestLauncherCancellationReapsChild(t *testing.T) {
 		Binary: os.Args[0], DataDir: t.TempDir(), Accounts: launcherAccountStore{account: accounts.Account{ID: "acc-1", Provider: providers.Codex, CredentialsRef: "managed"}}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
 	})
 	if err != nil {
+		if runtime.GOOS == "windows" {
+			var exitErr *launcher.ExitError
+			if errors.As(err, &exitErr) {
+				return
+			}
+		}
 		t.Fatalf("cancellation should be handled by child signal, got %v", err)
 	}
 }
