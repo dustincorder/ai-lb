@@ -144,7 +144,17 @@ describe('CodexAccount', () => {
     expect(await screen.findByText('Connected')).toBeInTheDocument()
     expect(screen.getByText('u@example.com')).toBeInTheDocument()
     expect(screen.getByText('Plan: plus')).toBeInTheDocument()
+    expect(screen.getByText('ai-lb codex --account acc-1')).toBeInTheDocument()
     expect(screen.getByText(/used 30%/)).toBeInTheDocument()
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    await user.click(screen.getByRole('button', { name: 'Copy CLI command' }))
+    expect(writeText).toHaveBeenCalledWith('ai-lb codex --account acc-1')
+
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    await user.click(screen.getByRole('button', { name: 'Copy CLI command' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to copy the CLI command.')
 
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     expect(calls.some((c) => c.includes('/codex/refresh'))).toBe(true)

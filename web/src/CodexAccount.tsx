@@ -58,6 +58,7 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [copiedCommand, setCopiedCommand] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
 
   useEffect(() => {
@@ -151,6 +152,18 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
     }
   }
 
+  async function onCopyCommand() {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(`ai-lb codex --account ${account.id}`)
+      setCopiedCommand(true)
+      setError(null)
+    } catch {
+      setCopiedCommand(false)
+      setError('Unable to copy the CLI command.')
+    }
+  }
+
   return (
     <div>
       {error && <p role="alert">{error}</p>}
@@ -205,6 +218,13 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
           <p>Connected</p>
           {status.email && <p>{status.email}</p>}
           {status.plan_type && <p>Plan: {status.plan_type}</p>}
+          <p>
+            <code>{`ai-lb codex --account ${account.id}`}</code>{' '}
+            <button type="button" onClick={() => void onCopyCommand()}>
+              Copy CLI command
+            </button>
+            {copiedCommand && <span> Copied.</span>}
+          </p>
           {status.quota && <QuotaView quota={status.quota} />}
           <button type="button" onClick={() => void onRefresh()} disabled={busy}>
             Refresh

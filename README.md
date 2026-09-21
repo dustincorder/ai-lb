@@ -42,6 +42,7 @@ Implemented:
 - Provider registry (`codex` integrated, `antigravity` planned)
 - Account profile CRUD via API and Accounts UI (local profiles with labels)
 - Codex CLI detection + managed Codex account login (browser / device code)
+- `ai-lb codex --account <account-id>` launcher for the official CLI
 - Isolated `CODEX_HOME` per account with keyring-only credential storage
 - Codex-owned OS keyring credentials (ai-lb never reads tokens or `auth.json`)
 - Account/plan read + rate limits + disconnect
@@ -52,7 +53,6 @@ Not implemented:
 
 - Real provider authentication for Antigravity
 - Import of the existing default Codex account (`~/.codex` untouched)
-- Official CLI switching
 - Automatic quota refresh
 - Routing / load balancing (pool routing, gateway use)
 - OpenAI-compatible endpoints
@@ -69,6 +69,23 @@ go build -o ai-lb ./cmd/ai-lb
 - `curl http://127.0.0.1:8318/health` should return `{"status":"ok"}`.
 - Change ports in Settings; restart the service for new ports to take effect.
 - The backend keeps running with no browser window open.
+
+### Launch Codex with a managed account
+
+For a connected Codex profile, launch the official CLI against that profile's
+isolated managed home:
+
+```bash
+ai-lb codex --account <account-id>
+ai-lb codex --account <account-id> -- --help
+ai-lb codex --account <account-id> -- exec "..."
+```
+
+Arguments after `--` are passed to Codex unchanged. This is a process-scoped
+launcher, not a global account switch: it does not modify `~/.codex`, copy or
+read tokens, write shell configuration, or create symlinks. The connected
+profile's existing managed `CODEX_HOME` is selected explicitly, and the
+launcher refuses a managed home containing plaintext `auth.json`.
 
 ## Release channels
 

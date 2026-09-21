@@ -119,7 +119,7 @@ func (c *Client) Start(lifetime, ops context.Context) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(lifetime, c.binary, "app-server")
-	env := restrictedEnv(c.home)
+	env := appServerEnv(c.home)
 	env = append(env, c.ExtraEnv...)
 	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
@@ -172,11 +172,10 @@ func (c *Client) reap(cmd *exec.Cmd) {
 	close(c.waitDone)
 }
 
-// restrictedEnv inherits a minimal environment with an explicit
-// CODEX_HOME override. No ai-lb keys, tokens, or unrelated provider
-// credentials are passed; PATH/HOME are preserved so Codex runs
-// normally instead of being broken by over-sanitization.
-func restrictedEnv(codexHome string) []string {
+// appServerEnv inherits only the environment needed by the JSON-RPC
+// app-server. It intentionally stays strict: no terminal-specific or
+// user credential variables are needed by this non-interactive process.
+func appServerEnv(codexHome string) []string {
 	keep := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true,
 		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "TMPDIR": true,
@@ -192,6 +191,12 @@ func restrictedEnv(codexHome string) []string {
 		}
 	}
 	return out
+}
+
+// restrictedEnv is retained for package tests and compatibility with the
+// app-server policy name; production app-server launches use appServerEnv.
+func restrictedEnv(codexHome string) []string {
+	return appServerEnv(codexHome)
 }
 
 // Call performs one request/response round trip with a timeout. Unknown
