@@ -136,6 +136,74 @@ func (s *Service) List(ctx context.Context) ([]Account, error) {
 	return s.repo.List(ctx)
 }
 
+// SetCredentialBinding links (ref != "") or unlinks (ref == "") the
+// opaque internal credential binding. For ai-lb-owned secrets this is a
+// SecretStore reference; for provider-owned lifecycles (Codex) it is a
+// stable binding token resolved by the integration, never a secret
+// itself. Reserved for provider integrations; the public management API
+// has no path to this method.
+func (s *Service) SetCredentialBinding(ctx context.Context, id, ref string) error {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return err
+	}
+	return s.repo.SetCredentialsRef(ctx, id, ref, s.Now().UTC())
+}
+
+// CompleteProviderConnection commits a successful provider connection:
+// binding, provider identity, and opaque provider account ID in one
+// atomic statement. Either all land or the profile stays exactly as it
+// was — a failed connection (including a duplicate upstream identity)
+// never leaves a half-linked account. Provider, label, and enabled are
+// untouched; empty identity keeps the stored value.
+func (s *Service) CompleteProviderConnection(ctx context.Context, id, ref, identity, providerAccountID string) (Account, error) {
+	identity = strings.TrimSpace(identity)
+	if len([]rune(identity)) > MaxIdentityLength {
+		return Account{}, &ValidationError{Field: "identity", Message: "provider identity exceeds limit"}
+	}
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return Account{}, err
+	}
+	if err := s.repo.SetConnection(ctx, id, ref, identity, providerAccountID, s.Now().UTC()); err != nil {
+		return Account{}, err
+	}
+	return s.repo.Get(ctx, id)
+}
+
+// ConnectedLabel returns the local label of the profile binding an
+// upstream account identity. Used for duplicate-conflict reporting;
+// the opaque ID itself never leaves the backend.
+func (s *Service) ConnectedLabel(ctx context.Context, provider, providerAccountID string) (string, error) {
+	a, err := s.repo.FindByProviderAccountID(ctx, provider, providerAccountID)
+	if err != nil {
+		return "", err
+	}
+	return a.Label, nil
+}
+
+// SyncProviderIdentity adopts a provider-reported identity (e.g. the
+// email from account/read) without touching provider or label. Empty
+// values leave the stored identity unchanged instead of writing garbage.
+func (s *Service) SyncProviderIdentity(ctx context.Context, id, identity string) (Account, error) {
+	a, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Account{}, err
+	}
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return a, nil
+	}
+	if len([]rune(identity)) > MaxIdentityLength {
+		return Account{}, &ValidationError{Field: "identity", Message: "provider identity exceeds limit"}
+	}
+	a.Identity = identity
+	a.UpdatedAt = s.Now().UTC()
+	updated, err := s.repo.Update(ctx, a)
+	if err != nil {
+		return Account{}, err
+	}
+	return updated, nil
+}
+
 // Delete removes the metadata row of an unconnected profile. A connected
 // profile (credentials_ref set) is refused with ErrConnected: deleting
 // metadata while leaving a credential reference/secret orphaned would be

@@ -21,8 +21,8 @@ const (
 type Descriptor struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
-	// Implemented is false for every provider until a real integration
-	// lands. It exists so the UI can be honest about what works.
+	// Implemented reports whether ai-lb integrates the provider. It
+	// exists so the UI can be honest about what works.
 	Implemented bool `json:"implemented"`
 }
 
@@ -46,17 +46,20 @@ func New(descriptors ...Descriptor) (*Registry, error) {
 		if _, dup := r.providers[d.ID]; dup {
 			return nil, fmt.Errorf("duplicate provider id %q", d.ID)
 		}
-		d.Implemented = false
 		r.providers[d.ID] = d
 	}
 	return r, nil
 }
 
-// Default returns the registry of providers ai-lb plans to support. The
-// descriptors are compile-time known, so construction cannot fail.
+// Default returns the registry of providers ai-lb plans to support.
+// Codex has a real managed-account integration; Antigravity does not
+// yet. Implemented means "ai-lb integrates this provider" — not "CLI
+// installed", "account connected", or "provider healthy"; those are
+// separate runtime states. The descriptors are compile-time known, so
+// construction cannot fail.
 func Default() *Registry {
 	r, err := New(
-		Descriptor{ID: Codex, DisplayName: "Codex"},
+		Descriptor{ID: Codex, DisplayName: "Codex", Implemented: true},
 		Descriptor{ID: Antigravity, DisplayName: "Antigravity"},
 	)
 	if err != nil {

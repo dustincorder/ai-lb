@@ -29,8 +29,9 @@ func init() {
 // appending; never edit an applied migration in place.
 //
 // Entries 1–2 are the foundation (settings, app_metadata); entries 3–5
-// form the accounts schema change (table plus its two indexes). Later
-// entries keep appending the same way.
+// form the accounts schema change (table plus its two indexes); entries
+// 6–7 add the opaque provider account identity plus its partial unique
+// index. Later entries keep appending the same way.
 var schemaMigrations = []string{
 	`CREATE TABLE settings (
 		key   TEXT PRIMARY KEY,
@@ -56,6 +57,13 @@ var schemaMigrations = []string{
 	)`,
 	`CREATE INDEX idx_accounts_provider ON accounts(provider)`,
 	`CREATE INDEX idx_accounts_enabled ON accounts(enabled)`,
+	// Migration 6–7: opaque provider-owned account identity for
+	// cross-profile deduplication. The partial unique index covers
+	// non-empty values only, so profiles without a known upstream ID
+	// keep working; the same opaque ID under different providers is
+	// allowed.
+	`ALTER TABLE accounts ADD COLUMN provider_account_id TEXT NOT NULL DEFAULT ''`,
+	`CREATE UNIQUE INDEX idx_accounts_provider_account ON accounts(provider, provider_account_id) WHERE provider_account_id <> ''`,
 }
 
 // schemaVersion is the number of migrations this binary knows.

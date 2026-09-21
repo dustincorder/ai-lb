@@ -53,15 +53,19 @@ func TestProvidersEndpoint(t *testing.T) {
 	for _, p := range list {
 		m := p.(map[string]any)
 		seen[m["id"].(string)] = true
-		if m["implemented"] != false {
-			t.Errorf("provider %v must report implemented=false", m["id"])
-		}
 		if m["display_name"] == "" {
 			t.Errorf("provider %v needs a display name", m["id"])
 		}
 	}
 	if !seen["codex"] || !seen["antigravity"] {
 		t.Errorf("expected codex + antigravity, got %v", seen)
+	}
+	for _, p := range list {
+		m := p.(map[string]any)
+		want := m["id"] == "codex"
+		if m["implemented"] != want {
+			t.Errorf("provider %v implemented = %v, want %v", m["id"], m["implemented"], want)
+		}
 	}
 }
 
@@ -185,7 +189,7 @@ func TestAccountResponsesNeverLeakSecrets(t *testing.T) {
 	}
 	raw, _ := json.Marshal(map[string]any{"one": created, "two": got})
 	lowered := strings.ToLower(string(raw))
-	for _, leak := range []string{"credentials_ref", "credentialsref", "secret", "token", "refresh", "auth blob"} {
+	for _, leak := range []string{"credentials_ref", "credentialsref", "secret", "token", "refresh", "auth blob", "provider_account_id", "provideraccountid"} {
 		if strings.Contains(lowered, leak) {
 			t.Errorf("response leaks %q: %s", leak, raw)
 		}

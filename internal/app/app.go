@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/dustincorder/ai-lb/internal/db"
 	"github.com/dustincorder/ai-lb/internal/gateway"
 	"github.com/dustincorder/ai-lb/internal/providers"
+	"github.com/dustincorder/ai-lb/internal/providers/codex"
 )
 
 // shutdownTimeout bounds graceful drain of both HTTP servers.
@@ -72,12 +75,19 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 	}
 
 	registry := providers.Default()
+	accService := accounts.NewService(registry, accounts.NewRepository(database.Conn))
 	a.controlRoutes = control.New(
 		database,
 		a.currentSettings,
 		build.Current(),
-		accounts.NewService(registry, accounts.NewRepository(database.Conn)),
+		accService,
 		registry,
+		codex.NewService(
+			resolveCodexBinary(),
+			filepath.Dir(database.Path),
+			build.Version,
+			accService,
+		),
 	)
 	a.control = &http.Server{
 		Handler:           a.controlRoutes,
@@ -110,6 +120,7 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 		defer cancel()
 		_ = a.control.Shutdown(shutCtx)
 		_ = a.gateway.Shutdown(shutCtx)
+		a.controlRoutes.Codex.Close()
 		_ = database.Close()
 		return fmt.Errorf("server failed: %w", err)
 	}
@@ -118,9 +129,19 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 	defer cancel()
 	_ = a.control.Shutdown(shutCtx)
 	_ = a.gateway.Shutdown(shutCtx)
+	a.controlRoutes.Codex.Close()
 	return database.Close()
 }
 
+// resolveCodexBinary locates the Codex CLI once at startup. Empty means
+// not installed; detection and methods report that explicitly.
+func resolveCodexBinary() string {
+	path, err := exec.LookPath("codex")
+	if err != nil {
+		return ""
+	}
+	return path
+}
 // currentSettings returns the settings active for this run.
 func (a *App) currentSettings() config.Settings {
 	return a.settings.Load().(config.Settings)

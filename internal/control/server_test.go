@@ -16,18 +16,21 @@ import (
 	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/build"
 	"github.com/dustincorder/ai-lb/internal/config"
-	"github.com/dustincorder/ai-lb/internal/providers"
 	"github.com/dustincorder/ai-lb/internal/db"
+	"github.com/dustincorder/ai-lb/internal/providers"
+	"github.com/dustincorder/ai-lb/internal/providers/codex"
 	"github.com/dustincorder/ai-lb/internal/update"
 )
 
-func testServerWith(database *db.DB, active func() config.Settings) *Server {
+func testServerWith(t *testing.T, database *db.DB, active func() config.Settings) *Server {
+	acc := accounts.NewService(providers.Default(), accounts.NewRepository(database.Conn))
 	return New(
 		database,
 		active,
 		build.Info{Version: "test", Channel: "dev"},
-		accounts.NewService(providers.Default(), accounts.NewRepository(database.Conn)),
+		acc,
 		providers.Default(),
+		codex.NewService("", t.TempDir(), "test", acc),
 	)
 }
 
@@ -43,7 +46,7 @@ func testServer(t *testing.T) *Server {
 		t.Fatalf("LoadSettings: %v", err)
 	}
 	current := settings
-	return testServerWith(database, func() config.Settings { return current })
+	return testServerWith(t, database, func() config.Settings { return current })
 }
 
 // divergentServer returns a control server whose ACTIVE settings differ
@@ -66,7 +69,7 @@ func divergentServer(t *testing.T) (*Server, config.Settings, config.Settings) {
 		t.Fatalf("SaveSettings: %v", err)
 	}
 	active := config.Defaults()
-	return testServerWith(database, func() config.Settings { return active }), configured, active
+	return testServerWith(t, database, func() config.Settings { return active }), configured, active
 }
 
 func getJSON(t *testing.T, url string) (int, map[string]any) {
@@ -144,10 +147,10 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 
 	next := config.Settings{
-		ControlHost: "127.0.0.1",
-		ControlPort: 8411,
-		GatewayHost: "127.0.0.1",
-		GatewayPort: 8412,
+		ControlHost:   "127.0.0.1",
+		ControlPort:   8411,
+		GatewayHost:   "127.0.0.1",
+		GatewayPort:   8412,
 		UpdateChannel: config.UpdateChannelStable,
 	}
 	raw, _ := json.Marshal(next)

@@ -8,6 +8,7 @@ import {
   type Account,
   type Provider,
 } from '../api'
+import { CodexAccount } from '../CodexAccount'
 
 export function Accounts() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -111,8 +112,8 @@ export function Accounts() {
     <section>
       <h2>Accounts</h2>
       <p>
-        Account profiles created now are local profiles only and are not
-        connected yet. Provider authentication will be added in a later step.
+        Manage provider accounts and connections. Codex authentication is
+        available; Antigravity support is planned.
       </p>
 
       {accounts.length === 0 && !showForm ? (
@@ -164,6 +165,9 @@ export function Accounts() {
                     <button type="button" onClick={() => void onToggle(a)}>
                       {a.enabled ? 'Disable' : 'Enable'}
                     </button>{' '}
+                    {a.provider === 'codex' && (
+                      <CodexAccount account={a} onChanged={() => void reload()} />
+                    )}
                     {confirmDeleteId === a.id ? (
                       <span>
                         Delete this account?{' '}

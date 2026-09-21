@@ -15,6 +15,9 @@ var (
 	// ErrConnected means the profile still references a stored secret
 	// and must not be deleted as plain metadata.
 	ErrConnected = errors.New("account is connected")
+	// ErrProviderAccountAlreadyConnected means another profile of the
+	// same provider already binds the same upstream account identity.
+	ErrProviderAccountAlreadyConnected = errors.New("provider account already connected")
 )
 
 // MaxLabelLength and MaxIdentityLength bound stored strings; the API
@@ -29,15 +32,21 @@ const (
 // Enabled means the operator allowed ai-lb to use this account. It says
 // nothing about health, authentication, or quota — those are separate
 // future runtime concepts, deliberately not folded into a status field.
+//
+// ProviderAccountID is the opaque provider-owned identity (never email,
+// never the local UUID, never a secret) used to deduplicate profiles
+// against one upstream quota identity. Empty means unknown. It never
+// leaves the backend: no public DTO carries it.
 type Account struct {
-	ID             string
-	Provider       string
-	Label          string
-	Identity       string
-	Enabled        bool
-	CredentialsRef string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                string
+	Provider          string
+	Label             string
+	Identity          string
+	Enabled           bool
+	CredentialsRef    string
+	ProviderAccountID string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // Connected derives whether a secret was ever stored for this profile.
