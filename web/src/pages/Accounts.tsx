@@ -112,8 +112,8 @@ export function Accounts() {
     <section>
       <h2>Accounts</h2>
       <p>
-        Account profiles created now are local profiles only and are not
-        connected yet. Provider authentication will be added in a later step.
+        Manage provider accounts and connections. Codex authentication is
+        available; Antigravity support is planned.
       </p>
 
       {accounts.length === 0 && !showForm ? (

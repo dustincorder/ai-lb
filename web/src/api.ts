@@ -207,6 +207,7 @@ export interface CodexLogin {
   verification_url?: string
   user_code?: string
   error?: string
+  error_code?: string
   started_at: string
 }
 

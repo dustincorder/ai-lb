@@ -189,7 +189,7 @@ func TestAccountResponsesNeverLeakSecrets(t *testing.T) {
 	}
 	raw, _ := json.Marshal(map[string]any{"one": created, "two": got})
 	lowered := strings.ToLower(string(raw))
-	for _, leak := range []string{"credentials_ref", "credentialsref", "secret", "token", "refresh", "auth blob"} {
+	for _, leak := range []string{"credentials_ref", "credentialsref", "secret", "token", "refresh", "auth blob", "provider_account_id", "provideraccountid"} {
 		if strings.Contains(lowered, leak) {
 			t.Errorf("response leaks %q: %s", leak, raw)
 		}

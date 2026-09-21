@@ -26,6 +26,7 @@ let calls: string[]
 
 function mockFetch() {
   return vi.fn(async (url: string, init?: RequestInit) => {
+
     const method = init?.method ?? 'GET'
     calls.push(`${method} ${url}`)
     for (const r of routes) {
@@ -168,4 +169,53 @@ describe('CodexAccount', () => {
     render(<CodexAccount account={profile} onChanged={() => undefined} />)
     expect(await screen.findByRole('alert')).toBeInTheDocument()
   })
+})
+
+describe('CodexAccount duplicate', () => {
+  beforeEach(() => {
+    routes = []
+    calls = []
+    vi.stubGlobal('fetch', mockFetch())
+  })
+
+  it('shows the duplicate message with the existing profile label', async () => {
+    const user = userEvent.setup()
+    routes.push(
+      {
+        method: 'GET',
+        match: (u) => u.endsWith('/codex/status'),
+        respond: () => Response.json({ connected: false, requires_openai_auth: true, observed_at: '' }),
+      },
+      {
+        method: 'POST',
+        match: (u) => u.endsWith('/codex/login'),
+        respond: () =>
+          Response.json({
+            account_id: 'acc-1',
+            login_id: 'login-9',
+            method: 'browser',
+            state: 'waiting',
+            auth_url: 'https://example.com/auth',
+          }),
+      },
+      {
+        method: 'GET',
+        match: (u) => u.endsWith('/codex/login'),
+        respond: () =>
+          Response.json({
+            account_id: 'acc-1',
+            login_id: 'login-9',
+            method: 'browser',
+            state: 'failed',
+            error_code: 'duplicate_provider_account',
+            error: 'This Codex account is already connected as "Personal".',
+          }),
+      },
+    )
+    render(<CodexAccount account={profile} onChanged={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: 'Connect with ChatGPT' }))
+    expect(
+      await screen.findByText('This Codex account is already connected as "Personal".', {}, { timeout: 8000 }),
+    ).toBeInTheDocument()
+  }, 15000)
 })

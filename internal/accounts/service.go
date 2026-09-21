@@ -150,11 +150,12 @@ func (s *Service) SetCredentialBinding(ctx context.Context, id, ref string) erro
 }
 
 // CompleteProviderConnection commits a successful provider connection:
-// binding plus provider identity in one atomic statement. Either both
-// land or the profile stays exactly as it was — a failed connection
+// binding, provider identity, and opaque provider account ID in one
+// atomic statement. Either all land or the profile stays exactly as it
+// was — a failed connection (including a duplicate upstream identity)
 // never leaves a half-linked account. Provider, label, and enabled are
 // untouched; empty identity keeps the stored value.
-func (s *Service) CompleteProviderConnection(ctx context.Context, id, ref, identity string) (Account, error) {
+func (s *Service) CompleteProviderConnection(ctx context.Context, id, ref, identity, providerAccountID string) (Account, error) {
 	identity = strings.TrimSpace(identity)
 	if len([]rune(identity)) > MaxIdentityLength {
 		return Account{}, &ValidationError{Field: "identity", Message: "provider identity exceeds limit"}
@@ -162,10 +163,21 @@ func (s *Service) CompleteProviderConnection(ctx context.Context, id, ref, ident
 	if _, err := s.repo.Get(ctx, id); err != nil {
 		return Account{}, err
 	}
-	if err := s.repo.SetConnection(ctx, id, ref, identity, s.Now().UTC()); err != nil {
+	if err := s.repo.SetConnection(ctx, id, ref, identity, providerAccountID, s.Now().UTC()); err != nil {
 		return Account{}, err
 	}
 	return s.repo.Get(ctx, id)
+}
+
+// ConnectedLabel returns the local label of the profile binding an
+// upstream account identity. Used for duplicate-conflict reporting;
+// the opaque ID itself never leaves the backend.
+func (s *Service) ConnectedLabel(ctx context.Context, provider, providerAccountID string) (string, error) {
+	a, err := s.repo.FindByProviderAccountID(ctx, provider, providerAccountID)
+	if err != nil {
+		return "", err
+	}
+	return a.Label, nil
 }
 
 // SyncProviderIdentity adopts a provider-reported identity (e.g. the

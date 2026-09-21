@@ -77,7 +77,7 @@ describe('Accounts page', () => {
     expect(await screen.findByText('No accounts yet.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add account' })).toBeInTheDocument()
     expect(
-      screen.getByText(/not connected yet/i),
+      screen.getByText(/Codex authentication is available/i),
     ).toBeInTheDocument()
   })
 
@@ -94,7 +94,7 @@ describe('Accounts page', () => {
     ]
     render(<Accounts />)
     expect(await screen.findByText('Personal')).toBeInTheDocument()
-    expect(screen.getByText(/Codex/)).toBeInTheDocument()
+    expect(screen.getByText('(Codex)')).toBeInTheDocument()
     expect(screen.getByText('Not connected')).toBeInTheDocument()
   })
 
@@ -111,7 +111,7 @@ describe('Accounts page', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByText('Work')).toBeInTheDocument()
-    expect(screen.getByText(/Antigravity/)).toBeInTheDocument()
+    expect(screen.getByText('(Antigravity)')).toBeInTheDocument()
     expect(store.length).toBe(1)
   })
 

@@ -453,7 +453,7 @@ func TestCompleteConnectionAtomic(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		big += "x"
 	}
-	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), big); err == nil {
+	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), big, ""); err == nil {
 		t.Fatal("oversized identity must fail")
 	}
 	got, err := svc.accounts.Get(ctx, a.ID)
@@ -464,7 +464,7 @@ func TestCompleteConnectionAtomic(t *testing.T) {
 		t.Errorf("failed connection must leave profile untouched: %+v", got)
 	}
 	// Success commits binding and identity together.
-	done, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com")
+	done, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com", "")
 	if err != nil {
 		t.Fatalf("CompleteProviderConnection: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestQuotaInvalidatedOnLogout(t *testing.T) {
 	}
 	// Link a binding directly (as a completed login would), then log
 	// out against a logged-out fake: the cache must drop.
-	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com"); err != nil {
+	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com", ""); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	svc.ExtraEnv = testExtraEnv(t)
@@ -837,5 +837,183 @@ func TestVerifyFailureTriggersOrphanLogout(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "account/logout") {
 		t.Errorf("post-success verification failure must attempt orphan logout, calls:\n%s", data)
+	}
+}
+
+func loginToSuccess(t *testing.T, svc *Service, id string) {
+	t.Helper()
+	if _, err := svc.StartLogin(context.Background(), id, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		cur := svc.GetLogin(id)
+		if cur.State == LoginSucceeded {
+			return
+		}
+		if cur.State == LoginFailed || cur.State == LoginExpired {
+			t.Fatalf("login ended %q: %s", cur.State, cur.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("login did not succeed, state=%q", cur.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func createCodexProfile(t *testing.T, svc *Service, label string) accounts.Account {
+	t.Helper()
+	a, err := svc.accounts.Create(context.Background(), accounts.CreateInput{
+		Provider: providers.Codex, Label: label,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	return a
+}
+
+// TestDuplicateUpstreamRejected proves one upstream quota identity
+// cannot back two local profiles: the second login fails with the
+// duplicate code, stays unbound, the first profile is untouched, and
+// cleanup logout runs only in the second managed home.
+func TestDuplicateUpstreamRejected(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "calls.log")
+	accountJSON := `{"type":"chatgpt","email":"same@example.com","planType":"plus"}`
+	ratelimits := `{"accountId":"acct-X","rateLimits":{"limitId":"codex","primary":{"usedPercent":10}}}`
+	svc, _ := testCodexService(t,
+		"AI_LB_FAKE_ACCOUNT="+accountJSON,
+		"AI_LB_FAKE_LOGIN=ok",
+		"AI_LB_FAKE_RATELIMITS="+ratelimits,
+		"AI_LB_FAKE_COUNT="+countFile,
+	)
+	ctx := context.Background()
+	a := createCodexProfile(t, svc, "Personal")
+	b := createCodexProfile(t, svc, "Work")
+
+	loginToSuccess(t, svc, a.ID)
+
+	if _, err := svc.StartLogin(ctx, b.ID, LoginBrowser); err != nil {
+		t.Fatalf("second StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var cur LoginSession
+	for {
+		cur = svc.GetLogin(b.ID)
+		if cur.State == LoginFailed {
+			break
+		}
+		if cur.State == LoginSucceeded {
+			t.Fatal("duplicate login must not succeed")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("duplicate did not resolve, state=%q", cur.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if cur.ErrorCode != "duplicate_provider_account" {
+		t.Errorf("terminal code = %q, want duplicate_provider_account", cur.ErrorCode)
+	}
+	if !strings.Contains(cur.Error, "already connected") {
+		t.Errorf("terminal message must name the conflict, got %q", cur.Error)
+	}
+	if !strings.Contains(cur.Error, "Personal") {
+		t.Errorf("terminal message should name the existing profile, got %q", cur.Error)
+	}
+	if strings.Contains(cur.Error, "acct-X") {
+		t.Errorf("opaque upstream id must never reach the UI: %q", cur.Error)
+	}
+
+	// Second profile stays fully unbound.
+	bb, err := svc.accounts.Get(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("Get B: %v", err)
+	}
+	if bb.Connected() || bb.ProviderAccountID != "" {
+		t.Errorf("duplicate profile must stay unbound: %+v", bb)
+	}
+	// First profile untouched: still bound, same identity, same upstream id.
+	aa, err := svc.accounts.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get A: %v", err)
+	}
+	if !aa.Connected() || aa.ProviderAccountID != "acct-X" {
+		t.Errorf("first profile must stay connected: %+v", aa)
+	}
+	// Cleanup logout ran exactly once, in B's home only.
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatalf("read count file: %v", err)
+	}
+	logouts := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "account/logout") {
+			continue
+		}
+		logouts++
+		if !strings.HasSuffix(line, "|"+b.ID) {
+			t.Errorf("logout must run in the duplicate home only, got %q (B=%s)", line, b.ID)
+		}
+	}
+	if logouts != 1 {
+		t.Errorf("want exactly 1 cleanup logout, got %d:\n%s", logouts, data)
+	}
+}
+
+// TestDistinctUpstreamIDsAllowed proves different quota identities and
+// unknown identities never collide — and that email alone is not a
+// uniqueness key.
+func TestDistinctUpstreamIDsAllowed(t *testing.T) {
+	svc, _ := testCodexService(t,
+		`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"same@example.com","planType":"plus"}`,
+		"AI_LB_FAKE_LOGIN=ok",
+	)
+	mk := func(label, pid string) accounts.Account {
+		t.Helper()
+		a := createCodexProfile(t, svc, label)
+		svc.ExtraEnv = testExtraEnv(t,
+			`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"same@example.com","planType":"plus"}`,
+			"AI_LB_FAKE_LOGIN=ok",
+			`AI_LB_FAKE_RATELIMITS={"accountId":"`+pid+`","rateLimits":{"limitId":"codex","primary":{"usedPercent":10}}}`,
+		)
+		loginToSuccess(t, svc, a.ID)
+		return a
+	}
+	one := mk("One", "acct-1")
+	two := mk("Two", "acct-2")
+	for _, tc := range []struct {
+		id  string
+		pid string
+	}{
+		{one.ID, "acct-1"},
+		{two.ID, "acct-2"},
+	} {
+		got, err := svc.accounts.Get(context.Background(), tc.id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.Connected() || got.ProviderAccountID != tc.pid {
+			t.Errorf("profile must bind its own pid: %+v", got)
+		}
+		if got.Identity != "same@example.com" {
+			t.Errorf("same email on distinct pids is fine: %+v", got)
+		}
+	}
+}
+
+// TestMissingUpstreamIDAllowsLogin proves login still succeeds when the
+// provider exposes no accountId, without email-based hard dedupe.
+func TestMissingUpstreamIDAllowsLogin(t *testing.T) {
+	svc, _ := testCodexService(t,
+		`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"same@example.com","planType":"plus"}`,
+		"AI_LB_FAKE_LOGIN=ok",
+	)
+	a := createCodexProfile(t, svc, "NoID")
+	loginToSuccess(t, svc, a.ID)
+	got, err := svc.accounts.Get(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Connected() || got.ProviderAccountID != "" {
+		t.Errorf("unknown upstream id must bind without pid: %+v", got)
 	}
 }

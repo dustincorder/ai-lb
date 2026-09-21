@@ -230,3 +230,68 @@ func TestConnectedDeleteRefused(t *testing.T) {
 		t.Errorf("unconnected delete = %v, want nil", err)
 	}
 }
+
+func TestDuplicateProviderAccountRejected(t *testing.T) {
+	svc, _, done := testService(t)
+	defer done()
+	ctx := context.Background()
+
+	a, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "A"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "B"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.CompleteProviderConnection(ctx, a.ID, "ref-a", "a@e.com", "acct-X"); err != nil {
+		t.Fatalf("bind A: %v", err)
+	}
+	// Same upstream identity on the second profile must fail atomically.
+	if _, err := svc.CompleteProviderConnection(ctx, b.ID, "ref-b", "b@e.com", "acct-X"); !errors.Is(err, ErrProviderAccountAlreadyConnected) {
+		t.Fatalf("duplicate must map to typed error, got %v", err)
+	}
+	// B stays fully unbound: no ref, no pid, original identity kept.
+	bb, err := svc.Get(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("Get B: %v", err)
+	}
+	if bb.Connected() || bb.ProviderAccountID != "" || bb.Identity != "" {
+		t.Errorf("failed duplicate must leave B untouched: %+v", bb)
+	}
+	// A untouched.
+	aa, err := svc.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get A: %v", err)
+	}
+	if !aa.Connected() || aa.ProviderAccountID != "acct-X" || aa.Identity != "a@e.com" {
+		t.Errorf("A must stay intact: %+v", aa)
+	}
+	// Same opaque ID under a different provider is allowed.
+	c, err := svc.Create(ctx, CreateInput{Provider: providers.Antigravity, Label: "C"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.CompleteProviderConnection(ctx, c.ID, "ref-c", "", "acct-X"); err != nil {
+		t.Errorf("cross-provider same pid must be allowed: %v", err)
+	}
+	// Empty pid never collides.
+	d, err := svc.Create(ctx, CreateInput{Provider: providers.Codex, Label: "D"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.CompleteProviderConnection(ctx, d.ID, "ref-d", "", ""); err != nil {
+		t.Errorf("empty pid must be allowed: %v", err)
+	}
+	// Finder resolves the bound profile for conflict reporting.
+	found, err := svc.ConnectedLabel(ctx, providers.Codex, "acct-X")
+	if err != nil {
+		t.Fatalf("ConnectedLabel: %v", err)
+	}
+	if found != "A" {
+		t.Errorf("ConnectedLabel = %q, want A", found)
+	}
+	if _, err := svc.ConnectedLabel(ctx, providers.Codex, "acct-missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown pid must be ErrNotFound, got %v", err)
+	}
+}

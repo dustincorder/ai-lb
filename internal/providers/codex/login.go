@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/dustincorder/ai-lb/internal/accounts"
 )
 
 // startAttempt is a cancellable login reservation: published before
@@ -208,10 +211,42 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 	vctx, cancel := context.WithTimeout(ctx, verifyTimeout)
 	defer cancel()
 	if err := s.completeLogin(vctx, accountID, sess); err != nil {
-		s.reconcileOrphan(accountID)
-		sess.setState(LoginFailed, publicLoginError(err))
+		var dup *duplicateError
+		if errors.As(err, &dup) {
+			s.failDuplicate(accountID, sess, dup.pid)
+		} else {
+			s.reconcileOrphan(accountID)
+			sess.setState(LoginFailed, publicLoginError(err))
+		}
 	}
 	s.removeLogin(accountID, sess)
+}
+
+// duplicateError carries the colliding upstream identity past the
+// commit so the waiter can reconcile and report without re-querying.
+type duplicateError struct {
+	pid string
+}
+
+func (e *duplicateError) Error() string { return "duplicate provider account" }
+
+func (e *duplicateError) Unwrap() error { return accounts.ErrProviderAccountAlreadyConnected }
+
+// failDuplicate handles a won-but-duplicate login: best-effort logout
+// runs only in this profile's managed home (the already-connected
+// profile is untouched), and the terminal state names the existing
+// local label when it can be resolved cleanly. The opaque upstream ID
+// never reaches the UI.
+func (s *Service) failDuplicate(accountID string, sess *loginSession, pid string) {
+	s.reconcileOrphan(accountID)
+	msg := "This Codex account is already connected."
+	if label, err := s.accounts.ConnectedLabel(context.Background(), "codex", pid); err == nil && label != "" {
+		msg = "This Codex account is already connected as \"" + label + "\"."
+	}
+	sess.mu.Lock()
+	sess.view.ErrorCode = "duplicate_provider_account"
+	sess.mu.Unlock()
+	sess.setState(LoginFailed, msg)
 }
 
 // completeLogin verifies the login against a live account/read, checks
@@ -231,8 +266,20 @@ func (s *Service) completeLogin(ctx context.Context, accountID string, sess *log
 	if !info.Connected {
 		return fmt.Errorf("%w: login completed but account is not connected", ErrCodexProtocol)
 	}
-	_, err = s.accounts.CompleteProviderConnection(ctx, accountID, BindingRefFor(accountID), info.Email)
+	// Duplicate prevention is authoritative only when Codex exposes the
+	// upstream account identity. A failed or empty accountId leaves the
+	// binding unknown and the login still succeeds — email is never
+	// used as a hard uniqueness key.
+	providerAccountID := ""
+	var rl rateLimitsResult
+	if err := c.Call(ctx, "account/rateLimits/read", nil, &rl); err == nil && rl.AccountID != nil {
+		providerAccountID = strings.TrimSpace(*rl.AccountID)
+	}
+	_, err = s.accounts.CompleteProviderConnection(ctx, accountID, BindingRefFor(accountID), info.Email, providerAccountID)
 	if err != nil {
+		if errors.Is(err, accounts.ErrProviderAccountAlreadyConnected) {
+			return &duplicateError{pid: providerAccountID}
+		}
 		return err
 	}
 	s.dropQuotaCache(accountID)

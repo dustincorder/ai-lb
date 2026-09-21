@@ -188,6 +188,9 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
       {!waiting && status !== null && !status.connected && (
         <div>
           <p>Not connected</p>
+          {login !== null &&
+            (login.state === 'failed' || login.state === 'expired') &&
+            login.error && <p role="status">{login.error}</p>}
           <button type="button" onClick={() => void onStart('browser')} disabled={busy}>
             Connect with ChatGPT
           </button>{' '}

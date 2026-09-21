@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,11 +73,20 @@ func fakeAppServer() int {
 		if countPath == "" {
 			return
 		}
+		line := method
+		// Attribute logout calls to the acting home so tests can prove
+		// cleanup ran in exactly one managed home. The account id is
+		// the parent directory of codex-home.
+		if method == "account/logout" {
+			if h := os.Getenv("CODEX_HOME"); h != "" {
+				line += "|" + filepath.Base(filepath.Dir(h))
+			}
+		}
 		f, err := os.OpenFile(countPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return
 		}
-		_, _ = fmt.Fprintln(f, method)
+		_, _ = fmt.Fprintln(f, line)
 		_ = f.Close()
 	}
 	initialized := false

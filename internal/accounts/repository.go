@@ -43,7 +43,7 @@ func scanAccount(row interface {
 	var created, updated string
 	if err := row.Scan(
 		&a.ID, &a.Provider, &a.Label, &a.Identity,
-		&enabled, &a.CredentialsRef, &created, &updated,
+		&enabled, &a.CredentialsRef, &a.ProviderAccountID, &created, &updated,
 	); err != nil {
 		return Account{}, err
 	}
@@ -64,10 +64,10 @@ func (r *Repository) Create(ctx context.Context, a Account) (Account, error) {
 		return Account{}, fmt.Errorf("%w: id and provider are required", ErrInvalid)
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO accounts(id, provider, label, identity, enabled, credentials_ref, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts(id, provider, label, identity, enabled, credentials_ref, provider_account_id, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Provider, a.Label, a.Identity, boolToInt(a.Enabled),
-		a.CredentialsRef, a.CreatedAt.UTC().Format(timeFormat), a.UpdatedAt.UTC().Format(timeFormat),
+		a.CredentialsRef, a.ProviderAccountID, a.CreatedAt.UTC().Format(timeFormat), a.UpdatedAt.UTC().Format(timeFormat),
 	)
 	if err != nil {
 		if isConstraintError(err) {
@@ -81,7 +81,7 @@ func (r *Repository) Create(ctx context.Context, a Account) (Account, error) {
 // Get returns one account by ID or ErrNotFound.
 func (r *Repository) Get(ctx context.Context, id string) (Account, error) {
 	a, err := scanAccount(r.db.QueryRowContext(ctx,
-		`SELECT id, provider, label, identity, enabled, credentials_ref, created_at, updated_at
+		`SELECT id, provider, label, identity, enabled, credentials_ref, provider_account_id, created_at, updated_at
 		 FROM accounts WHERE id = ?`, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -95,7 +95,7 @@ func (r *Repository) Get(ctx context.Context, id string) (Account, error) {
 // List returns all accounts ordered by creation time.
 func (r *Repository) List(ctx context.Context) ([]Account, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, provider, label, identity, enabled, credentials_ref, created_at, updated_at
+		`SELECT id, provider, label, identity, enabled, credentials_ref, provider_account_id, created_at, updated_at
 		 FROM accounts ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -165,16 +165,20 @@ func (r *Repository) SetCredentialsRef(ctx context.Context, id, ref string, upda
 // leaves a binding without its identity or vice versa. Empty identity
 // leaves the stored value unchanged. Only provider integrations use
 // this; the public management API has no path to it.
-func (r *Repository) SetConnection(ctx context.Context, id, ref, identity string, updated time.Time) error {
+func (r *Repository) SetConnection(ctx context.Context, id, ref, identity, providerAccountID string, updated time.Time) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE accounts
 		 SET credentials_ref = ?,
 		     identity = CASE WHEN ? <> '' THEN ? ELSE identity END,
+		     provider_account_id = ?,
 		     updated_at = ?
 		 WHERE id = ?`,
-		ref, identity, identity, updated.UTC().Format(timeFormat), id,
+		ref, identity, identity, providerAccountID, updated.UTC().Format(timeFormat), id,
 	)
 	if err != nil {
+		if isDuplicateProviderAccount(err) {
+			return ErrProviderAccountAlreadyConnected
+		}
 		return err
 	}
 	n, err := res.RowsAffected()
@@ -185,6 +189,37 @@ func (r *Repository) SetConnection(ctx context.Context, id, ref, identity string
 		return ErrNotFound
 	}
 	return nil
+}
+
+// FindByProviderAccountID returns the profile binding an upstream
+// account identity, if any. Used for duplicate-conflict reporting;
+// the opaque ID itself never leaves the backend.
+func (r *Repository) FindByProviderAccountID(ctx context.Context, provider, providerAccountID string) (Account, error) {
+	if providerAccountID == "" {
+		return Account{}, ErrNotFound
+	}
+	a, err := scanAccount(r.db.QueryRowContext(ctx,
+		`SELECT id, provider, label, identity, enabled, credentials_ref, provider_account_id, created_at, updated_at
+		 FROM accounts WHERE provider = ? AND provider_account_id = ?`, provider, providerAccountID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Account{}, ErrNotFound
+		}
+		return Account{}, err
+	}
+	return a, nil
+}
+
+// isDuplicateProviderAccount detects the partial unique index
+// violation for (provider, provider_account_id) without importing
+// driver-specific types: the conflicting columns travel in the message
+// (SQLite reports columns, not the index name).
+func isDuplicateProviderAccount(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "accounts.provider_account_id")
 }
 
 // Delete removes the metadata row. Deletion of real secret material,

@@ -61,7 +61,11 @@ type LoginSession struct {
 	VerificationURL string      `json:"verification_url,omitempty"`
 	UserCode        string      `json:"user_code,omitempty"`
 	Error           string      `json:"error,omitempty"`
-	StartedAt       time.Time   `json:"started_at"`
+	// ErrorCode is a stable machine-readable failure reason
+	// (e.g. duplicate_provider_account). Absent unless the terminal
+	// state carries a classified failure.
+	ErrorCode string    `json:"error_code,omitempty"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // AccountInfo is the normalized account/read result.
