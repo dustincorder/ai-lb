@@ -170,6 +170,9 @@ func fakeAppServer() int {
 			}})
 		}
 	}
+	if os.Getenv("AI_LB_FAKE_HANG") == "1" {
+		select {} // ignore stdin EOF: hang until killed (Close-kill path)
+	}
 	return 0
 }
 

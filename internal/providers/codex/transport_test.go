@@ -201,3 +201,38 @@ func TestCompatibleWithFake(t *testing.T) {
 		t.Error("missing binary must fail compatibility")
 	}
 }
+
+func TestCloseTwiceSafe(t *testing.T) {
+	c := startFake(t, context.Background())
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close must be safe: %v", err)
+	}
+	// Reaper ran exactly once: the channel is closed, never blocking.
+	select {
+	case <-c.waitDone:
+	default:
+		t.Error("waitDone should be settled after Close")
+	}
+}
+
+func TestCloseHungProcessKills(t *testing.T) {
+	old := closeKillTimeout
+	closeKillTimeout = time.Second
+	defer func() { closeKillTimeout = old }()
+	c := startFake(t, context.Background(), "AI_LB_FAKE_HANG=1")
+	start := time.Now()
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("hung Close took %v", elapsed)
+	}
+	select {
+	case <-c.waitDone:
+	default:
+		t.Error("reaper must settle even after kill")
+	}
+}

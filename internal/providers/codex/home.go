@@ -35,7 +35,10 @@ func ManagedHome(dataDir, accountID string) (string, error) {
 	if err := os.Chmod(home, 0o700); err != nil {
 		return "", fmt.Errorf("secure managed home: %w", err)
 	}
-	if err := writeManagedConfig(home); err != nil {
+	// The managed home belongs to ai-lb: enforce the exact non-secret
+	// config before any spawn, so a tampered config.toml can never flip
+	// the home into file-based credential storage unnoticed.
+	if err := enforceManagedConfig(home); err != nil {
 		return "", err
 	}
 	return home, nil
@@ -54,13 +57,41 @@ func safeAccountID(id string) bool {
 	return true
 }
 
-func writeManagedConfig(home string) error {
+// enforceManagedConfig guarantees the exact managed config.toml:
+// keyring-only credential storage plus no self-update. An existing file
+// with identical content is left alone; any drift (including a switch
+// to file-based auth storage) is repaired atomically before Codex can
+// start, so a login can never run in file-storage mode. config.toml
+// holds no secrets.
+func enforceManagedConfig(home string) error {
 	path := filepath.Join(home, "config.toml")
-	if _, err := os.Stat(path); err == nil {
-		return nil // never overwrite an existing managed config
+	if data, err := os.ReadFile(path); err == nil && string(data) == managedConfigTOML {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect managed config: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(managedConfigTOML), 0o600); err != nil {
+	tmp, err := os.CreateTemp(home, "config.toml.*")
+	if err != nil {
+		return fmt.Errorf("stage managed config: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(managedConfigTOML); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return fmt.Errorf("write managed config: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("secure managed config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("write managed config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("install managed config: %w", err)
 	}
 	return nil
 }

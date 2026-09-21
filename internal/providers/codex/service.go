@@ -101,6 +101,9 @@ type loginSession struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	mu      sync.Mutex
+	// loginID mirrors view.LoginID for the notification filter; it is
+	// read from the reader goroutine, so all access holds mu.
+	loginID string
 	state   LoginState
 	failure string
 }

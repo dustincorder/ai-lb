@@ -138,13 +138,41 @@ func (r *Repository) Update(ctx context.Context, a Account) (Account, error) {
 	return a, nil
 }
 
-// SetCredentialsRef links (or unlinks, with ref == "") the secret store
-// reference. Only the future auth/provider layer may call this; the
-// public management API has no path to it.
+// SetCredentialsRef links (or unlinks, with ref == "") the opaque
+// credential binding. Only provider integrations use this; the public
+// management API has no path to it.
 func (r *Repository) SetCredentialsRef(ctx context.Context, id, ref string, updated time.Time) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE accounts SET credentials_ref = ?, updated_at = ? WHERE id = ?`,
 		ref, updated.UTC().Format(timeFormat), id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetConnection links (or unlinks, with ref == "") the credential
+// binding and adopts the provider identity in one statement, so the
+// two metadata changes commit atomically — a failed connection never
+// leaves a binding without its identity or vice versa. Empty identity
+// leaves the stored value unchanged. Only provider integrations use
+// this; the public management API has no path to it.
+func (r *Repository) SetConnection(ctx context.Context, id, ref, identity string, updated time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE accounts
+		 SET credentials_ref = ?,
+		     identity = CASE WHEN ? <> '' THEN ? ELSE identity END,
+		     updated_at = ?
+		 WHERE id = ?`,
+		ref, identity, identity, updated.UTC().Format(timeFormat), id,
 	)
 	if err != nil {
 		return err

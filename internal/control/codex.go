@@ -22,6 +22,7 @@ type codexBackend interface {
 	CancelLogin(ctx context.Context, accountID, loginID string) (codex.LoginSession, error)
 	ReadAccount(ctx context.Context, accountID string) (codex.AccountInfo, error)
 	ReadRateLimits(ctx context.Context, accountID string) (codex.QuotaSnapshot, error)
+	RefreshRateLimits(ctx context.Context, accountID string) (codex.QuotaSnapshot, error)
 	Logout(ctx context.Context, accountID string) error
 	Close()
 }
@@ -240,7 +241,8 @@ func (s *Server) handleCodexStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleCodexRefresh forces a live quota read.
+// handleCodexRefresh forces a live quota read, bypassing the snapshot
+// cache that GET status uses.
 func (s *Server) handleCodexRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody("method_not_allowed", "method not allowed"))
@@ -251,7 +253,7 @@ func (s *Server) handleCodexRefresh(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r)
 		return
 	}
-	q, err := s.Codex.ReadRateLimits(r.Context(), a.ID)
+	q, err := s.Codex.RefreshRateLimits(r.Context(), a.ID)
 	if err != nil {
 		codexError(w, err)
 		return

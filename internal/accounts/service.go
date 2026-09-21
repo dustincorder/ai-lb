@@ -137,14 +137,35 @@ func (s *Service) List(ctx context.Context) ([]Account, error) {
 }
 
 // SetCredentialBinding links (ref != "") or unlinks (ref == "") the
-// secret-store reference of a profile. Reserved for provider
-// integrations after they safely persist a secret; the public
-// management API has no path to this method.
+// opaque internal credential binding. For ai-lb-owned secrets this is a
+// SecretStore reference; for provider-owned lifecycles (Codex) it is a
+// stable binding token resolved by the integration, never a secret
+// itself. Reserved for provider integrations; the public management API
+// has no path to this method.
 func (s *Service) SetCredentialBinding(ctx context.Context, id, ref string) error {
 	if _, err := s.repo.Get(ctx, id); err != nil {
 		return err
 	}
 	return s.repo.SetCredentialsRef(ctx, id, ref, s.Now().UTC())
+}
+
+// CompleteProviderConnection commits a successful provider connection:
+// binding plus provider identity in one atomic statement. Either both
+// land or the profile stays exactly as it was — a failed connection
+// never leaves a half-linked account. Provider, label, and enabled are
+// untouched; empty identity keeps the stored value.
+func (s *Service) CompleteProviderConnection(ctx context.Context, id, ref, identity string) (Account, error) {
+	identity = strings.TrimSpace(identity)
+	if len([]rune(identity)) > MaxIdentityLength {
+		return Account{}, &ValidationError{Field: "identity", Message: "provider identity exceeds limit"}
+	}
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return Account{}, err
+	}
+	if err := s.repo.SetConnection(ctx, id, ref, identity, s.Now().UTC()); err != nil {
+		return Account{}, err
+	}
+	return s.repo.Get(ctx, id)
 }
 
 // SyncProviderIdentity adopts a provider-reported identity (e.g. the

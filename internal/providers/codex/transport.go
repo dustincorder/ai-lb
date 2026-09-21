@@ -30,10 +30,18 @@ const (
 // default.
 var startupTimeout = 20 * time.Second
 
+// closeKillTimeout bounds the graceful exit wait in Close before the
+// process is killed. Variable for tests; production uses the default.
+var closeKillTimeout = 5 * time.Second
+
 // Client is a JSON-RPC-ish stdio client for one `codex app-server`
 // process. One client owns exactly one process; login sessions that
 // must outlive a single call keep their client alive instead of
 // sharing one.
+//
+// Lifetime: exactly one goroutine ever calls cmd.Wait (see reap); Close
+// and context cancellation share that single reaper path, so Wait is
+// never invoked twice.
 type Client struct {
 	binary string
 	home   string
@@ -43,15 +51,16 @@ type Client struct {
 	// the fake executable (which restrictedEnv would otherwise strip).
 	ExtraEnv []string
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	nextID  atomic.Int64
-	pending map[string]chan rpcResult
-	notify  func(notification)
-	closed  chan struct{}
-	closeDo sync.Once
-	stderr  *boundedBuffer
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	nextID   atomic.Int64
+	pending  map[string]chan rpcResult
+	notify   func(notification)
+	closed   chan struct{}
+	closeDo  sync.Once
+	waitDone chan error
+	stderr   *boundedBuffer
 }
 
 type rpcResult struct {
@@ -59,7 +68,8 @@ type rpcResult struct {
 	rpcErr *rpcError
 }
 
-// boundedBuffer keeps the tail of stderr for diagnostics.
+// boundedBuffer keeps the tail of stderr for diagnostics. The stored
+// contents never exceed maxStderr bytes, no matter the write pattern.
 type boundedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -68,33 +78,31 @@ type boundedBuffer struct {
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.buf.Len() > maxStderr {
-		b.buf.Next(len(p))
+	n, _ := b.buf.Write(p)
+	if over := b.buf.Len() - maxStderr; over > 0 {
+		b.buf.Next(over)
 	}
-	return b.buf.Write(p)
+	return n, nil
 }
 
 func (b *boundedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := b.buf.String()
-	if len(s) > maxStderr {
-		s = s[len(s)-maxStderr:]
-	}
-	return s
+	return b.buf.String()
 }
 
 // NewClient builds an unstarted client. notify receives server
 // notifications and must return quickly and never block.
 func NewClient(binary, codexHome, clientVersion string, notify func(notification)) *Client {
 	return &Client{
-		binary:  binary,
-		home:    codexHome,
-		info:    aiLBClientInfo(clientVersion),
-		pending: map[string]chan rpcResult{},
-		notify:  notify,
-		closed:  make(chan struct{}),
-		stderr:  &boundedBuffer{},
+		binary:   binary,
+		home:     codexHome,
+		info:     aiLBClientInfo(clientVersion),
+		pending:  map[string]chan rpcResult{},
+		notify:   notify,
+		closed:   make(chan struct{}),
+		waitDone: make(chan error, 1),
+		stderr:   &boundedBuffer{},
 	}
 }
 
@@ -138,10 +146,7 @@ func (c *Client) Start(ctx context.Context) error {
 		_, _ = io.Copy(c.stderr, stderr)
 	}()
 	go c.readLoop(stdout)
-	go func() {
-		_ = cmd.Wait()
-		c.failAll(fmt.Errorf("%w: process exited", ErrCodexProcessFailed))
-	}()
+	go c.reap(cmd)
 
 	var initRes initializeResult
 	if err := c.call(startCtx, "initialize", map[string]any{"clientInfo": c.info}, &initRes); err != nil {
@@ -153,6 +158,17 @@ func (c *Client) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// reap is the single process reaper: exactly one goroutine per client
+// ever calls cmd.Wait. It records the exit, fails pending requests,
+// and unblocks Close. Context cancellation reaches the process through
+// exec.CommandContext and lands here like any other exit.
+func (c *Client) reap(cmd *exec.Cmd) {
+	err := cmd.Wait()
+	c.failAll(fmt.Errorf("%w: process exited: %v", ErrCodexProcessFailed, err))
+	c.waitDone <- err
+	close(c.waitDone)
 }
 
 // restrictedEnv inherits a minimal environment with an explicit
@@ -332,9 +348,11 @@ func (c *Client) failAll(err error) {
 	}
 }
 
-// Close terminates the process: close stdin, wait briefly, kill on
-// expiry. Stderr tail is available to the owner via Stderr() for
-// sanitized diagnostics only.
+// Close terminates the process through the single reaper path: close
+// stdin, wait briefly for the reaped exit, kill on expiry and wait
+// again. It is safe to call twice and never invokes Wait itself.
+// Stderr tail is available to the owner via Stderr() for sanitized
+// diagnostics only.
 func (c *Client) Close() error {
 	var cmd *exec.Cmd
 	c.closeDo.Do(func() {
@@ -351,16 +369,12 @@ func (c *Client) Close() error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-c.waitDone:
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(closeKillTimeout):
 		_ = cmd.Process.Kill()
+		<-c.waitDone
 		return nil
 	}
 }

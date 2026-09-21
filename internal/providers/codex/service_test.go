@@ -309,3 +309,205 @@ func TestClassifyRPC(t *testing.T) {
 		t.Errorf("raw upstream text must not leak: %q", s)
 	}
 }
+
+func TestLoginSurvivesRequestCancel(t *testing.T) {
+	svc, a := testCodexService(t,
+		`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"u@e.com","planType":"plus"}`,
+		"AI_LB_FAKE_LOGIN=ok",
+	)
+	// Cancellable "HTTP-like" context for the start call.
+	httpCtx, cancel := context.WithCancel(context.Background())
+	sess, err := svc.StartLogin(httpCtx, a.ID, LoginBrowser)
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if sess.State != LoginWaiting {
+		t.Fatalf("expected waiting, got %q", sess.State)
+	}
+	// The HTTP request dies; the session process must stay alive.
+	cancel()
+	svc.mu.Lock()
+	live, ok := svc.logins[a.ID]
+	svc.mu.Unlock()
+	if !ok {
+		t.Fatal("session vanished after request cancel")
+	}
+	select {
+	case <-live.client.waitDone:
+		t.Fatal("session process died with the HTTP request context")
+	default:
+	}
+	// Completion must still succeed afterwards.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		cur := svc.GetLogin(a.ID)
+		if cur.State == LoginSucceeded {
+			break
+		}
+		if cur.State == LoginFailed || cur.State == LoginExpired {
+			t.Fatalf("login ended %q: %s", cur.State, cur.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("login did not complete after request cancel")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	got, err := svc.accounts.Get(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Connected() {
+		t.Error("post-cancel completion must still bind")
+	}
+}
+
+func TestQuotaPrimarySecondaryPreserved(t *testing.T) {
+	usedP, usedS := 20, 60
+	res := rateLimitsResult{
+		RateLimits: &rateLimitSnapshot{
+			LimitID:   strRef("codex"),
+			LimitName: strRef("Codex"),
+			Primary:   &rateLimitWindow{UsedPercent: &usedP},
+			Secondary: &rateLimitWindow{UsedPercent: &usedS},
+		},
+		// Same buckets mirrored under byLimitId must not duplicate.
+		RateLimitsByLimitID: map[string]rateLimitSnapshot{
+			"codex": {
+				LimitID:   strRef("codex"),
+				LimitName: strRef("Codex"),
+				Primary:   &rateLimitWindow{UsedPercent: &usedP},
+				Secondary: &rateLimitWindow{UsedPercent: &usedS},
+			},
+			"extra": {
+				Primary:   &rateLimitWindow{UsedPercent: intPtr(10)},
+				Secondary: &rateLimitWindow{UsedPercent: intPtr(90)},
+			},
+		},
+	}
+	snap := mapQuota(res, time.Now().UTC())
+	if len(snap.Windows) != 4 {
+		t.Fatalf("want primary+secondary+extra×2, got %+v", snap.Windows)
+	}
+	got := map[string]int{}
+	for _, w := range snap.Windows {
+		got[w.LimitID]++
+	}
+	if got["codex"] != 2 || got["extra"] != 2 {
+		t.Errorf("bucket roles lost or duplicated: %+v", snap.Windows)
+	}
+}
+
+func TestQuotaCacheAvoidsLiveCall(t *testing.T) {
+	svc, a := testCodexService(t)
+	ctx := context.Background()
+	first, err := svc.ReadRateLimits(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	// Break live reads; a TTL-fresh second read must serve cache.
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_RATELIMITS=ERROR:-32000:boom")
+	second, err := svc.ReadRateLimits(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("cached read must not touch live backend: %v", err)
+	}
+	if second.Stale {
+		t.Error("fresh cache must not be marked stale")
+	}
+	if len(second.Windows) != len(first.Windows) {
+		t.Errorf("cached snapshot differs: %+v vs %+v", second, first)
+	}
+}
+
+func TestRefreshBypassesCache(t *testing.T) {
+	svc, a := testCodexService(t)
+	ctx := context.Background()
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	// New live data must win over cache on explicit refresh.
+	svc.ExtraEnv = testExtraEnv(t, `AI_LB_FAKE_RATELIMITS={"rateLimits":{"limitId":"codex","primary":{"usedPercent":77}}}`)
+	refreshed, err := svc.RefreshRateLimits(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if refreshed.Stale || len(refreshed.Windows) == 0 || orZero(refreshed.Windows[0].UsedPercent) != 77 {
+		t.Errorf("refresh must return fresh live data: %+v", refreshed)
+	}
+	// Failing live with cache present returns stale, not an error.
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_RATELIMITS=ERROR:-32000:boom")
+	stale, err := svc.RefreshRateLimits(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("refresh with cache must degrade to stale: %v", err)
+	}
+	if !stale.Stale {
+		t.Error("degraded refresh must be marked stale")
+	}
+}
+
+func TestCompleteConnectionAtomic(t *testing.T) {
+	svc, a := testCodexService(t)
+	ctx := context.Background()
+	// Oversized identity fails validation: nothing may commit.
+	big := ""
+	for i := 0; i < 300; i++ {
+		big += "x"
+	}
+	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), big); err == nil {
+		t.Fatal("oversized identity must fail")
+	}
+	got, err := svc.accounts.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Connected() || got.Identity != "" {
+		t.Errorf("failed connection must leave profile untouched: %+v", got)
+	}
+	// Success commits binding and identity together.
+	done, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com")
+	if err != nil {
+		t.Fatalf("CompleteProviderConnection: %v", err)
+	}
+	if !done.Connected() || done.Identity != "u@e.com" {
+		t.Errorf("binding+identity must commit together: %+v", done)
+	}
+}
+
+func TestTamperedConfigRepaired(t *testing.T) {
+	dir := t.TempDir()
+	home, err := ManagedHome(dir, "acc-1")
+	if err != nil {
+		t.Fatalf("ManagedHome: %v", err)
+	}
+	tampered := "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n"
+	if err := os.WriteFile(home+"/config.toml", []byte(tampered), 0o600); err != nil {
+		t.Fatalf("tamper config: %v", err)
+	}
+	if _, err := ManagedHome(dir, "acc-1"); err != nil {
+		t.Fatalf("ManagedHome repair: %v", err)
+	}
+	data, err := os.ReadFile(home + "/config.toml")
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(data) != managedConfigTOML {
+		t.Errorf("tampered config must be restored exactly, got:\n%s", data)
+	}
+}
+
+func TestPublicLoginErrorSanitized(t *testing.T) {
+	nasty := errors.New("open /tmp/ailb-codex/providers/codex/accounts/x/codex-home/auth.json: permission denied; token abc123; {\"raw\":1}")
+	for _, err := range []error{
+		nasty,
+		errors.Join(ErrCodexProcessFailed, nasty),
+	} {
+		if got := publicLoginError(err); got != "login verification failed" {
+			t.Errorf("unrecognized failure must be generic, got %q", got)
+		}
+	}
+	if got := publicLoginError(ErrCredentialStoreUnavailable); got != "managed credential storage is unsafe" {
+		t.Errorf("unsafe-storage message wrong: %q", got)
+	}
+	if got := publicLoginError(ErrCodexProtocol); got != "login verification failed" {
+		t.Errorf("protocol message wrong: %q", got)
+	}
+}

@@ -57,6 +57,12 @@ func (s *stubCodex) ReadRateLimits(_ context.Context, _ string) (codex.QuotaSnap
 	}
 	return s.quota, nil
 }
+func (s *stubCodex) RefreshRateLimits(_ context.Context, _ string) (codex.QuotaSnapshot, error) {
+	if s.quotaErr != nil {
+		return codex.QuotaSnapshot{}, s.quotaErr
+	}
+	return s.quota, nil
+}
 func (s *stubCodex) Logout(_ context.Context, accountID string) error {
 	if s.logoutErr != nil {
 		return s.logoutErr

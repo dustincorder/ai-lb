@@ -39,36 +39,39 @@ func mapRateWindow(limitID, limitName string, rw *rateLimitWindow) *QuotaWindow 
 }
 
 // mapQuota converts a rateLimits/read response into a snapshot. Primary
-// and secondary buckets come first; extra limit-id buckets follow except
-// when they duplicate an already emitted limit id. Unknown upstream
-// fields are ignored by the decoder; missing data stays unknown.
+// and secondary buckets are distinct windows even under one limit id,
+// so deduplication keys on (limit id, bucket role). The historical
+// single-bucket view and the same entry under rateLimitsByLimitId must
+// not duplicate each other. Unknown upstream fields are ignored by the
+// decoder; missing data stays unknown.
 func mapQuota(res rateLimitsResult, now time.Time) QuotaSnapshot {
 	snap := QuotaSnapshot{Provider: "codex", UpdatedAt: now}
-	seen := map[string]bool{}
-	emit := func(limitID, limitName string, rw *rateLimitWindow) {
+	seen := map[[2]string]bool{}
+	emit := func(limitID, limitName, role string, rw *rateLimitWindow) {
 		w := mapRateWindow(limitID, limitName, rw)
 		if w == nil {
 			return
 		}
+		key := [2]string{limitID, role}
 		if limitID != "" {
-			if seen[limitID] {
+			if seen[key] {
 				return
 			}
-			seen[limitID] = true
+			seen[key] = true
 		}
 		snap.Windows = append(snap.Windows, *w)
 	}
 	if res.RateLimits != nil {
-		emit(deref(res.RateLimits.LimitID), deref(res.RateLimits.LimitName), res.RateLimits.Primary)
-		emit(deref(res.RateLimits.LimitID), deref(res.RateLimits.LimitName), res.RateLimits.Secondary)
+		emit(deref(res.RateLimits.LimitID), deref(res.RateLimits.LimitName), "primary", res.RateLimits.Primary)
+		emit(deref(res.RateLimits.LimitID), deref(res.RateLimits.LimitName), "secondary", res.RateLimits.Secondary)
 		for id, bucket := range res.RateLimitsByLimitID {
 			b := bucket
 			name := id
 			if b.LimitName != nil && *b.LimitName != "" {
 				name = *b.LimitName
 			}
-			emit(id, name, b.Primary)
-			emit(id, name, b.Secondary)
+			emit(id, name, "primary", b.Primary)
+			emit(id, name, "secondary", b.Secondary)
 		}
 	}
 	if snap.Windows == nil {
@@ -84,15 +87,43 @@ func deref(s *string) string {
 	return *s
 }
 
-// ReadRateLimits returns the quota snapshot, using a short in-memory
-// cache (quotaCacheTTL) to avoid spamming the app-server from UI
-// polling. On live failure with a cached snapshot, the cached value is
-// returned marked stale; without cache the error propagates. Snapshots
+// ReadRateLimits returns the quota snapshot, reusing the in-memory
+// cache while it is fresh (quotaCacheTTL) so ordinary UI polling does
+// not spawn an app-server per view. A stale result is served only on
+// live failure; with no cache at all the error propagates. Snapshots
 // are never persisted to SQLite.
 func (s *Service) ReadRateLimits(ctx context.Context, accountID string) (QuotaSnapshot, error) {
 	if _, err := s.accounts.Get(ctx, accountID); err != nil {
 		return QuotaSnapshot{}, err
 	}
+	if snap, ok := s.freshQuota(accountID); ok {
+		return snap, nil
+	}
+	return s.refreshQuotaLocked(ctx, accountID)
+}
+
+// RefreshRateLimits always performs a live read, bypassing the cache
+// TTL, and updates the cache on success. On live failure with a cached
+// snapshot it returns the snapshot marked stale; without cache the
+// error propagates.
+func (s *Service) RefreshRateLimits(ctx context.Context, accountID string) (QuotaSnapshot, error) {
+	if _, err := s.accounts.Get(ctx, accountID); err != nil {
+		return QuotaSnapshot{}, err
+	}
+	return s.refreshQuotaLocked(ctx, accountID)
+}
+
+func (s *Service) freshQuota(accountID string) (QuotaSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cached, ok := s.quotas[accountID]
+	if !ok || time.Since(cached.at) > quotaCacheTTL {
+		return QuotaSnapshot{}, false
+	}
+	return cached.snapshot, true
+}
+
+func (s *Service) refreshQuotaLocked(ctx context.Context, accountID string) (QuotaSnapshot, error) {
 	snap, err := s.readRateLimitsLive(ctx, accountID)
 	if err == nil {
 		s.mu.Lock()
@@ -105,10 +136,6 @@ func (s *Service) ReadRateLimits(ctx context.Context, accountID string) (QuotaSn
 	s.mu.Unlock()
 	if !ok {
 		return QuotaSnapshot{}, fmt.Errorf("quota unavailable: %w", err)
-	}
-	if time.Since(cached.at) > quotaCacheTTL {
-		// Cache aged out: still better than nothing for display, but
-		// honestly marked stale.
 	}
 	cached.snapshot.Stale = true
 	return cached.snapshot, nil
