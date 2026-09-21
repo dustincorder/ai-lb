@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -509,5 +510,210 @@ func TestPublicLoginErrorSanitized(t *testing.T) {
 	}
 	if got := publicLoginError(ErrCodexProtocol); got != "login verification failed" {
 		t.Errorf("protocol message wrong: %q", got)
+	}
+}
+
+func TestConcurrentStartSingleFlight(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "calls.log")
+	svc, a := testCodexService(t, "AI_LB_FAKE_COUNT="+countFile)
+	const racers = 8
+	type outcome struct {
+		sess LoginSession
+		err  error
+	}
+	results := make(chan outcome, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			sess, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser)
+			results <- outcome{sess, err}
+		}()
+	}
+	ok, busy := 0, 0
+	for i := 0; i < racers; i++ {
+		r := <-results
+		if r.err == nil {
+			ok++
+		} else if errors.Is(r.err, ErrLoginInProgress) {
+			busy++
+		} else {
+			t.Errorf("unexpected start error: %v", r.err)
+		}
+	}
+	if ok != 1 || busy != racers-1 {
+		t.Fatalf("want exactly 1 winner and %d rejections, got %d/%d", racers-1, ok, busy)
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatalf("read count file: %v", err)
+	}
+	starts := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "account/login/start" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("want exactly 1 upstream login/start, got %d", starts)
+	}
+	sess := svc.GetLogin(a.ID)
+	if _, err := svc.CancelLogin(context.Background(), a.ID, sess.LoginID); err != nil {
+		t.Fatalf("cleanup cancel: %v", err)
+	}
+}
+
+func TestQuotaInvalidatedOnReconnect(t *testing.T) {
+	svc, a := testCodexService(t)
+	ctx := context.Background()
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	// Break live reads: while cached, the old snapshot still serves.
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_RATELIMITS=ERROR:-32000:boom")
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err != nil {
+		t.Fatalf("cached read must survive broken backend: %v", err)
+	}
+	// Reconnect (login success) invalidates the cache: the next read
+	// must go live again instead of returning the previous snapshot.
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_LOGIN=ok",
+		`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"u@e.com","planType":"plus"}`)
+	if _, err := svc.StartLogin(ctx, a.ID, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.GetLogin(a.ID).State != LoginSucceeded && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if svc.GetLogin(a.ID).State != LoginSucceeded {
+		t.Fatal("login did not succeed")
+	}
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_RATELIMITS=ERROR:-32000:boom")
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err == nil {
+		t.Error("post-reconnect read must go live, not serve the pre-login snapshot")
+	}
+}
+
+func TestQuotaInvalidatedOnLogout(t *testing.T) {
+	svc, a := testCodexService(t)
+	ctx := context.Background()
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	// Link a binding directly (as a completed login would), then log
+	// out against a logged-out fake: the cache must drop.
+	if _, err := svc.accounts.CompleteProviderConnection(ctx, a.ID, BindingRefFor(a.ID), "u@e.com"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	svc.ExtraEnv = testExtraEnv(t)
+	if err := svc.Logout(ctx, a.ID); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	svc.ExtraEnv = testExtraEnv(t, "AI_LB_FAKE_RATELIMITS=ERROR:-32000:boom")
+	if _, err := svc.ReadRateLimits(ctx, a.ID); err == nil {
+		t.Error("post-logout read must go live, not serve the pre-logout snapshot")
+	}
+}
+
+func TestNastyNotificationErrorStaysGeneric(t *testing.T) {
+	nasty := "/tmp/ailb-x/auth.json token=sk-abc {\"raw\":true}\nstderr dump"
+	svc, a := testCodexService(t, "AI_LB_FAKE_LOGIN=fail:"+nasty)
+	if _, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var cur LoginSession
+	for {
+		cur = svc.GetLogin(a.ID)
+		if cur.State == LoginFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("login did not resolve as failed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if cur.Error != "login failed" {
+		t.Errorf("terminal error must be generic, got %q", cur.Error)
+	}
+	for _, leak := range []string{"/tmp/ailb-x", "sk-abc", "stderr dump", "raw"} {
+		if strings.Contains(cur.Error, leak) {
+			t.Errorf("terminal error leaks %q: %q", leak, cur.Error)
+		}
+	}
+}
+
+func TestShutdownDuringVerification(t *testing.T) {
+	svc, a := testCodexService(t,
+		`AI_LB_FAKE_ACCOUNT={"type":"chatgpt","email":"u@e.com","planType":"plus"}`,
+		"AI_LB_FAKE_LOGIN=ok",
+		"AI_LB_FAKE_READ_HANG=1",
+	)
+	if _, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	// Wait until the waiter is inside verification (past the
+	// notification): poll briefly, then shut down mid-verify.
+	time.Sleep(800 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		svc.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Close did not finish while verification hung")
+	}
+	cur := svc.GetLogin(a.ID)
+	if cur.State != LoginFailed && cur.State != LoginCancelled {
+		t.Errorf("interrupted verification must end failed/cancelled, got %q", cur.State)
+	}
+}
+
+func TestFailedBindingCleansUpProviderCredential(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "calls.log")
+	big := ""
+	for i := 0; i < 30; i++ {
+		big += "user@example.com"
+	}
+	accountJSON := `{"type":"chatgpt","email":"` + big + `","planType":"plus"}`
+	svc, a := testCodexService(t,
+		"AI_LB_FAKE_ACCOUNT="+accountJSON,
+		"AI_LB_FAKE_LOGIN=ok",
+		"AI_LB_FAKE_COUNT="+countFile,
+	)
+	if _, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var cur LoginSession
+	for {
+		cur = svc.GetLogin(a.ID)
+		if cur.State == LoginFailed {
+			break
+		}
+		if cur.State == LoginSucceeded {
+			t.Fatal("oversized identity must not succeed")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("login did not resolve, state=%q", cur.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if cur.Error != "login verification failed" {
+		t.Errorf("terminal error must be generic, got %q", cur.Error)
+	}
+	got, err := svc.accounts.Get(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Connected() {
+		t.Error("failed binding must leave the profile unbound")
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatalf("read count file: %v", err)
+	}
+	if !strings.Contains(string(data), "account/logout") {
+		t.Errorf("failed binding must attempt provider logout cleanup, calls:\n%s", data)
 	}
 }

@@ -23,12 +23,26 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	if _, err := s.accounts.Get(ctx, accountID); err != nil {
 		return LoginSession{}, err
 	}
+	// Reserve the login slot before spawning anything: concurrent starts
+	// for one account serialize here, so exactly one upstream
+	// account/login/start can happen. The mutex is never held across
+	// subprocess or RPC work.
 	s.mu.Lock()
 	if _, busy := s.logins[accountID]; busy {
 		s.mu.Unlock()
 		return LoginSession{}, ErrLoginInProgress
 	}
+	if s.starting[accountID] {
+		s.mu.Unlock()
+		return LoginSession{}, ErrLoginInProgress
+	}
+	s.starting[accountID] = true
 	s.mu.Unlock()
+	release := func() {
+		s.mu.Lock()
+		delete(s.starting, accountID)
+		s.mu.Unlock()
+	}
 
 	loginType := "chatgpt"
 	if method == LoginDevice {
@@ -48,7 +62,10 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	sess.client = nil
 
 	// Detached session lifetime: independent of the starting request.
+	// Cancel func and context are attached before publication, so any
+	// observer of the session can always cancel it.
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	sess.cancel = sessionCancel
 	notify := func(n notification) {
 		if n.Method != "account/login/completed" {
 			return
@@ -71,6 +88,7 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	c, _, err := s.spawn(sessionCtx, accountID, notify)
 	if err != nil {
 		sessionCancel()
+		release()
 		return LoginSession{}, err
 	}
 	sess.client = c
@@ -93,11 +111,13 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	if err != nil {
 		sessionCancel()
 		c.Close()
+		release()
 		return LoginSession{}, err
 	}
 	if started.LoginID == "" {
 		sessionCancel()
 		c.Close()
+		release()
 		return LoginSession{}, fmt.Errorf("%w: login/start returned no loginId", ErrCodexProtocol)
 	}
 	sess.mu.Lock()
@@ -115,20 +135,28 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	sess.mu.Unlock()
 
 	s.mu.Lock()
+	// The reservation makes a busy map entry here impossible, but check
+	// defensively: never publish over another session.
 	if _, busy := s.logins[accountID]; busy {
 		s.mu.Unlock()
 		sessionCancel()
 		c.Close()
+		release()
 		return LoginSession{}, ErrLoginInProgress
 	}
+	delete(s.starting, accountID)
 	s.logins[accountID] = sess
 	delete(s.last, accountID)
 	s.mu.Unlock()
 
-	sess.cancel = sessionCancel
 	go s.waitLogin(sessionCtx, accountID, sess)
 	return sess.snapshot(), nil
 }
+
+// verifyTimeout bounds the post-notification verification subprocess.
+// It derives from the session context, so shutdown, cancel, and session
+// timeout stop verification instead of abandoning it.
+const verifyTimeout = 30 * time.Second
 
 // waitLogin resolves one session: success notification → verify, bind,
 // and sync identity; failure/timeout/cancel → terminal state with
@@ -148,11 +176,9 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 		return
 	case ev := <-sess.events:
 		if ev.Success == nil || !*ev.Success {
-			msg := "login failed"
-			if ev.Error != nil && *ev.Error != "" {
-				msg = sanitizeError(*ev.Error)
-			}
-			sess.setState(LoginFailed, msg)
+			// Provider failure text is internal diagnostics only;
+			// the public terminal message stays stable and generic.
+			sess.setState(LoginFailed, "login failed")
 			s.removeLogin(accountID, sess)
 			return
 		}
@@ -162,7 +188,9 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 	// Terminal errors are sanitized to stable public messages: internal
 	// paths, subprocess errors, RPC payloads, and stderr must never
 	// reach the poll API.
-	if err := s.completeLogin(context.Background(), accountID, sess); err != nil {
+	vctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+	if err := s.completeLogin(vctx, accountID, sess); err != nil {
 		sess.setState(LoginFailed, publicLoginError(err))
 	}
 	s.removeLogin(accountID, sess)
@@ -171,6 +199,14 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 // completeLogin verifies the login against a live account/read, checks
 // managed storage safety, and commits binding plus identity atomically.
 // Any failure leaves the profile exactly as it was (fail closed).
+//
+// Orphan rule: provider login already placed credentials in the Codex
+// keyring before ai-lb binds anything. If the metadata commit fails,
+// completeLogin best-effort logs out to avoid an unmanaged credential
+// lingering under connected=false. Keyring and SQLite are not one
+// atomic transaction and this is not presented as such; a failed
+// cleanup only yields the generic failed state plus internal
+// diagnostics.
 func (s *Service) completeLogin(ctx context.Context, accountID string, sess *loginSession) error {
 	c, home, err := s.spawn(ctx, accountID, nil)
 	if err != nil {
@@ -186,10 +222,27 @@ func (s *Service) completeLogin(ctx context.Context, accountID string, sess *log
 	}
 	_, err = s.accounts.CompleteProviderConnection(ctx, accountID, BindingRefFor(accountID), info.Email)
 	if err != nil {
+		s.reconcileOrphan(ctx, accountID)
 		return err
 	}
+	s.dropQuotaCache(accountID)
 	sess.setState(LoginSucceeded, "")
 	return nil
+}
+
+// reconcileOrphan best-effort logs out after a failed metadata commit
+// so no unmanaged Codex credential survives next to an unbound
+// profile. Errors stay internal; the session still reports failure.
+func (s *Service) reconcileOrphan(ctx context.Context, accountID string) {
+	rctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+	c, _, err := s.spawn(rctx, accountID, nil)
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	var ignored struct{}
+	_ = c.Call(rctx, "account/logout", nil, &ignored)
 }
 
 func (s *Service) removeLogin(accountID string, sess *loginSession) {
@@ -264,7 +317,14 @@ func (s *Service) Logout(ctx context.Context, accountID string) error {
 	if info.Connected {
 		return fmt.Errorf("%w: account still connected after logout", ErrCodexProtocol)
 	}
-	return s.accounts.SetCredentialBinding(ctx, accountID, "")
+	if err := s.accounts.SetCredentialBinding(ctx, accountID, ""); err != nil {
+		return err
+	}
+	// A later login may connect a different ChatGPT identity under this
+	// profile: drop the previous identity's quota snapshot so it can
+	// never be served fresh within its TTL.
+	s.dropQuotaCache(accountID)
+	return nil
 }
 
 // Close cancels all pending login sessions. Called on service shutdown.

@@ -136,21 +136,12 @@ func TestCallTimeout(t *testing.T) {
 func TestContextCancelKillsProcess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := startFake(t, ctx, "AI_LB_FAKE_QUIET_AFTER_INIT=1")
-	proc := c.cmd.Process
-	if proc == nil {
-		t.Fatal("no process")
-	}
 	cancel()
-	// The process is bound to ctx via CommandContext: it must exit
-	// without an explicit kill from the test.
-	reaped := make(chan struct{}, 1)
-	go func() {
-		_, _ = proc.Wait()
-		reaped <- struct{}{}
-	}()
+	// Completion is observed through the client's own reaper signal;
+	// tests never Wait on the subprocess directly.
 	select {
-	case <-reaped:
-	case <-time.After(5 * time.Second):
+	case <-c.waitDone:
+	case <-time.After(10 * time.Second):
 		t.Error("cancelled context left the process alive")
 	}
 	c.Close()

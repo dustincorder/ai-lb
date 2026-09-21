@@ -95,12 +95,12 @@ type QuotaSnapshot struct {
 }
 
 type loginSession struct {
-	view    LoginSession
-	client  *Client
-	events  chan loginCompletedParams
-	cancel  context.CancelFunc
-	done    chan struct{}
-	mu      sync.Mutex
+	view   LoginSession
+	client *Client
+	events chan loginCompletedParams
+	cancel context.CancelFunc
+	done   chan struct{}
+	mu     sync.Mutex
 	// loginID mirrors view.LoginID for the notification filter; it is
 	// read from the reader goroutine, so all access holds mu.
 	loginID string
@@ -140,6 +140,10 @@ type Service struct {
 
 	mu     sync.Mutex
 	logins map[string]*loginSession
+	// starting reserves an account while its login process spawns and
+	// its login/start call runs, so concurrent starts serialize before
+	// any subprocess exists.
+	starting map[string]bool
 	// last keeps the most recent terminal session view per account so
 	// polling observes succeeded/failed/cancelled/expired instead of a
 	// disappearing session. Cleared when the next login starts.
@@ -157,6 +161,7 @@ func NewService(binary, dataDir, clientVersion string, acc *accounts.Service) *S
 		version:  clientVersion,
 		accounts: acc,
 		logins:   map[string]*loginSession{},
+		starting: map[string]bool{},
 		last:     map[string]LoginSession{},
 		quotas:   map[string]cachedQuota{},
 	}

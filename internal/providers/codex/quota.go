@@ -112,7 +112,6 @@ func (s *Service) RefreshRateLimits(ctx context.Context, accountID string) (Quot
 	}
 	return s.refreshQuotaLocked(ctx, accountID)
 }
-
 func (s *Service) freshQuota(accountID string) (QuotaSnapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -121,6 +120,16 @@ func (s *Service) freshQuota(accountID string) (QuotaSnapshot, bool) {
 		return QuotaSnapshot{}, false
 	}
 	return cached.snapshot, true
+}
+
+// dropQuotaCache forgets the snapshot for an account. Called after a
+// successful connection commit and after logout: one local profile may
+// later authenticate as a different ChatGPT identity, and the previous
+// identity's quota must never be served fresh within its TTL.
+func (s *Service) dropQuotaCache(accountID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.quotas, accountID)
 }
 
 func (s *Service) refreshQuotaLocked(ctx context.Context, accountID string) (QuotaSnapshot, error) {

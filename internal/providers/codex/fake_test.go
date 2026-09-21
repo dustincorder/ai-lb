@@ -14,6 +14,9 @@ package codex
 //   - AI_LB_FAKE_EXIT_AFTER=n                 → exit after n input lines
 //   - AI_LB_FAKE_BADLINE=1                    → emit one garbage line at startup
 //   - AI_LB_FAKE_SILENT=1                     → never answer (timeout/cancel paths)
+//   - AI_LB_FAKE_QUIET_AFTER_INIT=1           → answer handshake, then go silent
+//   - AI_LB_FAKE_READ_HANG=1                  → never answer account/read (verification hang)
+//   - AI_LB_FAKE_COUNT=/path                  → append one line per handled method call
 
 import (
 	"bufio"
@@ -60,6 +63,19 @@ func fakeAppServer() int {
 	lines := 0
 	silent := os.Getenv("AI_LB_FAKE_SILENT") == "1"
 	quietAfterInit := os.Getenv("AI_LB_FAKE_QUIET_AFTER_INIT") == "1"
+	readHang := os.Getenv("AI_LB_FAKE_READ_HANG") == "1"
+	countPath := os.Getenv("AI_LB_FAKE_COUNT")
+	count := func(method string) {
+		if countPath == "" {
+			return
+		}
+		f, err := os.OpenFile(countPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintln(f, method)
+		_ = f.Close()
+	}
 	initialized := false
 	exitAfter := -1
 	if n, err := strconv.Atoi(os.Getenv("AI_LB_FAKE_EXIT_AFTER")); err == nil {
@@ -84,6 +100,10 @@ func fakeAppServer() int {
 		if quietAfterInit && initialized && msg.Method != "initialize" && msg.Method != "initialized" {
 			continue
 		}
+		if readHang && msg.Method == "account/read" {
+			continue
+		}
+		count(msg.Method)
 		switch msg.Method {
 		case "initialize":
 			initialized = true
@@ -122,9 +142,12 @@ func fakeAppServer() int {
 			if mode := os.Getenv("AI_LB_FAKE_LOGIN"); mode != "" {
 				go func() {
 					time.Sleep(200 * time.Millisecond)
-					params := map[string]any{"loginId": loginID, "success": mode == "ok"}
-					if mode != "ok" {
+					params := map[string]any{"loginId": loginID, "success": strings.HasPrefix(mode, "ok")}
+					if !strings.HasPrefix(mode, "ok") {
 						params["error"] = "user cancelled at provider"
+						if rest, ok := strings.CutPrefix(mode, "fail:"); ok && rest != "" {
+							params["error"] = rest
+						}
 					}
 					fakeWrite(map[string]any{
 						"method": "account/login/completed", "params": params,
