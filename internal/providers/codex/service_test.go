@@ -717,3 +717,125 @@ func TestFailedBindingCleansUpProviderCredential(t *testing.T) {
 		t.Errorf("failed binding must attempt provider logout cleanup, calls:\n%s", data)
 	}
 }
+
+func TestCloseKillsStartingAttempt(t *testing.T) {
+	svc, a := testCodexService(t, "AI_LB_FAKE_INIT_HANG=1")
+	started := make(chan error, 1)
+	go func() {
+		_, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser)
+		started <- err
+	}()
+	// Let the attempt reach the hanging handshake, then shut down.
+	time.Sleep(500 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		svc.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Close did not finish with a hanging start")
+	}
+	select {
+	case err := <-started:
+		if err == nil {
+			t.Error("killed start must fail")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("starting attempt did not resolve after Close")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.starting) != 0 || len(svc.logins) != 0 {
+		t.Errorf("maps must be empty after Close: starting=%d logins=%d",
+			len(svc.starting), len(svc.logins))
+	}
+}
+
+func TestConcurrentStartingShutdown(t *testing.T) {
+	svc, _ := testCodexService(t, "AI_LB_FAKE_INIT_HANG=1")
+	ctx := context.Background()
+	ids := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		a, err := svc.accounts.Create(ctx, accounts.CreateInput{
+			Provider: providers.Codex, Label: "race",
+		})
+		if err != nil {
+			t.Fatalf("create profile: %v", err)
+		}
+		ids = append(ids, a.ID)
+	}
+	for _, id := range ids {
+		go func(id string) {
+			_, _ = svc.StartLogin(context.Background(), id, LoginBrowser)
+		}(id)
+	}
+	time.Sleep(500 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		svc.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Close did not finish with concurrent starts")
+	}
+	// Starting attempts clean up asynchronously after Close cancels
+	// them; poll briefly rather than asserting instantly.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		svc.mu.Lock()
+		starting, logins := len(svc.starting), len(svc.logins)
+		svc.mu.Unlock()
+		if starting == 0 && logins == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("maps must empty after Close: starting=%d logins=%d", starting, logins)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestVerifyFailureTriggersOrphanLogout(t *testing.T) {
+	countFile := filepath.Join(t.TempDir(), "calls.log")
+	svc, a := testCodexService(t,
+		"AI_LB_FAKE_LOGIN=ok",
+		"AI_LB_FAKE_READ_ERROR=-32000:verification backend exploded",
+		"AI_LB_FAKE_COUNT="+countFile,
+	)
+	if _, err := svc.StartLogin(context.Background(), a.ID, LoginBrowser); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var cur LoginSession
+	for {
+		cur = svc.GetLogin(a.ID)
+		if cur.State == LoginFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("login did not resolve, state=%q", cur.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if cur.Error != "login verification failed" {
+		t.Errorf("terminal error must be generic, got %q", cur.Error)
+	}
+	got, err := svc.accounts.Get(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Connected() {
+		t.Error("failed verification must leave the profile unbound")
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatalf("read count file: %v", err)
+	}
+	if !strings.Contains(string(data), "account/logout") {
+		t.Errorf("post-success verification failure must attempt orphan logout, calls:\n%s", data)
+	}
+}

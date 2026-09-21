@@ -16,7 +16,7 @@ func startFake(t *testing.T, ctx context.Context, extra ...string) *Client {
 	dir := t.TempDir()
 	c := NewClient(exe, dir, "test", nil)
 	c.ExtraEnv = env[len(os.Environ()):]
-	if err := c.Start(ctx); err != nil {
+	if err := c.Start(ctx, ctx); err != nil {
 		t.Fatalf("fake Start: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
@@ -61,7 +61,7 @@ func TestNotificationDispatch(t *testing.T) {
 		}
 	})
 	c.ExtraEnv = fakeExtra(t, "AI_LB_FAKE_LOGIN=ok")
-	if err := c.Start(ctx); err != nil {
+	if err := c.Start(ctx, ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer c.Close()
@@ -116,7 +116,7 @@ func TestProcessExitFailsPending(t *testing.T) {
 	exe, env := fakeEnv(t, "AI_LB_FAKE_EXIT_AFTER=0")
 	c := NewClient(exe, t.TempDir(), "test", nil)
 	c.ExtraEnv = env[len(os.Environ()):]
-	if err := c.Start(context.Background()); err == nil {
+	if err := c.Start(context.Background(), context.Background()); err == nil {
 		t.Error("handshake against an exiting process must fail")
 		defer c.Close()
 	}

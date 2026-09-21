@@ -140,10 +140,11 @@ type Service struct {
 
 	mu     sync.Mutex
 	logins map[string]*loginSession
-	// starting reserves an account while its login process spawns and
-	// its login/start call runs, so concurrent starts serialize before
-	// any subprocess exists.
-	starting map[string]bool
+	// starting holds cancellable reservations for logins still in
+	// spawn/initialize/login-start. A reservation carries its own
+	// cancel func, so Service.Close can kill attempts that never
+	// became sessions. Never held across subprocess or RPC work.
+	starting map[string]*startAttempt
 	// last keeps the most recent terminal session view per account so
 	// polling observes succeeded/failed/cancelled/expired instead of a
 	// disappearing session. Cleared when the next login starts.
@@ -161,7 +162,7 @@ func NewService(binary, dataDir, clientVersion string, acc *accounts.Service) *S
 		version:  clientVersion,
 		accounts: acc,
 		logins:   map[string]*loginSession{},
-		starting: map[string]bool{},
+		starting: map[string]*startAttempt{},
 		last:     map[string]LoginSession{},
 		quotas:   map[string]cachedQuota{},
 	}
@@ -175,7 +176,8 @@ func (s *Service) requireBinary() (string, error) {
 }
 
 // spawn starts an initialized client on the account's managed home.
-func (s *Service) spawn(ctx context.Context, accountID string, notify func(notification)) (*Client, string, error) {
+// lifetime owns the process; ops bounds the initialize handshake.
+func (s *Service) spawn(lifetime, ops context.Context, accountID string, notify func(notification)) (*Client, string, error) {
 	binary, err := s.requireBinary()
 	if err != nil {
 		return nil, "", err
@@ -186,7 +188,7 @@ func (s *Service) spawn(ctx context.Context, accountID string, notify func(notif
 	}
 	c := NewClient(binary, home, s.version, notify)
 	c.ExtraEnv = s.ExtraEnv
-	if err := c.Start(ctx); err != nil {
+	if err := c.Start(lifetime, ops); err != nil {
 		return nil, "", err
 	}
 	return c, home, nil
@@ -249,7 +251,7 @@ func (s *Service) ReadAccount(ctx context.Context, accountID string) (AccountInf
 	if _, err := s.accounts.Get(ctx, accountID); err != nil {
 		return AccountInfo{}, err
 	}
-	c, home, err := s.spawn(ctx, accountID, nil)
+	c, home, err := s.spawn(ctx, ctx, accountID, nil)
 	if err != nil {
 		return AccountInfo{}, err
 	}

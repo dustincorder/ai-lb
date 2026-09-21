@@ -16,6 +16,8 @@ package codex
 //   - AI_LB_FAKE_SILENT=1                     → never answer (timeout/cancel paths)
 //   - AI_LB_FAKE_QUIET_AFTER_INIT=1           → answer handshake, then go silent
 //   - AI_LB_FAKE_READ_HANG=1                  → never answer account/read (verification hang)
+//   - AI_LB_FAKE_READ_ERROR=code:msg           → account/read answers a JSON-RPC error
+//   - AI_LB_FAKE_INIT_HANG=1                  → never answer initialize (startup hang)
 //   - AI_LB_FAKE_COUNT=/path                  → append one line per handled method call
 
 import (
@@ -62,6 +64,7 @@ func fakeAppServer() int {
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	lines := 0
 	silent := os.Getenv("AI_LB_FAKE_SILENT") == "1"
+	initHang := os.Getenv("AI_LB_FAKE_INIT_HANG") == "1"
 	quietAfterInit := os.Getenv("AI_LB_FAKE_QUIET_AFTER_INIT") == "1"
 	readHang := os.Getenv("AI_LB_FAKE_READ_HANG") == "1"
 	countPath := os.Getenv("AI_LB_FAKE_COUNT")
@@ -97,6 +100,9 @@ func fakeAppServer() int {
 		if silent {
 			continue
 		}
+		if initHang && msg.Method == "initialize" {
+			continue
+		}
 		if quietAfterInit && initialized && msg.Method != "initialize" && msg.Method != "initialized" {
 			continue
 		}
@@ -113,6 +119,20 @@ func fakeAppServer() int {
 		case "initialized":
 			// notification: no reply
 		case "account/read":
+			if errSpec := os.Getenv("AI_LB_FAKE_READ_ERROR"); errSpec != "" {
+				code := -32000
+				errMsg := errSpec
+				if i := strings.Index(errSpec, ":"); i >= 0 {
+					if n, err := strconv.Atoi(errSpec[:i]); err == nil {
+						code = n
+					}
+					errMsg = errSpec[i+1:]
+				}
+				fakeWrite(map[string]any{"id": msg.ID, "error": map[string]any{
+					"code": code, "message": errMsg,
+				}})
+				continue
+			}
 			account := any(nil)
 			if raw := os.Getenv("AI_LB_FAKE_ACCOUNT"); raw != "" {
 				var a any

@@ -43,7 +43,7 @@ func Compatible(ctx context.Context, binary, codexHome, clientVersion string, ex
 	c.ExtraEnv = extraEnv
 	ctx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
-	if err := c.Start(ctx); err != nil {
+	if err := c.Start(ctx, ctx); err != nil {
 		_ = c.Close()
 		return fmt.Errorf("%w: %v", ErrCodexIncompatible, err)
 	}

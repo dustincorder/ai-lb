@@ -151,7 +151,7 @@ func (s *Service) refreshQuotaLocked(ctx context.Context, accountID string) (Quo
 }
 
 func (s *Service) readRateLimitsLive(ctx context.Context, accountID string) (QuotaSnapshot, error) {
-	c, _, err := s.spawn(ctx, accountID, nil)
+	c, _, err := s.spawn(ctx, ctx, accountID, nil)
 	if err != nil {
 		return QuotaSnapshot{}, err
 	}

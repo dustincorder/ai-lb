@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+// startAttempt is a cancellable login reservation: published before
+// any subprocess exists so shutdown can kill attempts that never
+// became sessions.
+type startAttempt struct {
+	cancel context.CancelFunc
+}
+
+// mergeCtx returns a context cancelled when either parent is done.
+// The caller must call stop; it releases the relay goroutine.
+func mergeCtx(a, b context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-a.Done():
+			cancel()
+		case <-b.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 // StartLogin begins a browser or device login for a Codex profile. At
 // most one session runs per account; a second start is a conflict.
 //
@@ -25,18 +48,22 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 	}
 	// Reserve the login slot before spawning anything: concurrent starts
 	// for one account serialize here, so exactly one upstream
-	// account/login/start can happen. The mutex is never held across
-	// subprocess or RPC work.
+	// account/login/start can happen. The reservation carries its own
+	// cancel func, so Service.Close kills attempts still in spawn or
+	// handshake. The mutex is never held across subprocess or RPC work.
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if _, busy := s.logins[accountID]; busy {
 		s.mu.Unlock()
+		sessionCancel()
 		return LoginSession{}, ErrLoginInProgress
 	}
-	if s.starting[accountID] {
+	if _, busy := s.starting[accountID]; busy {
 		s.mu.Unlock()
+		sessionCancel()
 		return LoginSession{}, ErrLoginInProgress
 	}
-	s.starting[accountID] = true
+	s.starting[accountID] = &startAttempt{cancel: sessionCancel}
 	s.mu.Unlock()
 	release := func() {
 		s.mu.Lock()
@@ -60,11 +87,6 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 		StartedAt: time.Now().UTC(),
 	}
 	sess.client = nil
-
-	// Detached session lifetime: independent of the starting request.
-	// Cancel func and context are attached before publication, so any
-	// observer of the session can always cancel it.
-	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	sess.cancel = sessionCancel
 	notify := func(n notification) {
 		if n.Method != "account/login/completed" {
@@ -85,29 +107,22 @@ func (s *Service) StartLogin(ctx context.Context, accountID string, method Login
 		default:
 		}
 	}
-	c, _, err := s.spawn(sessionCtx, accountID, notify)
+	// One merged operations context for the whole begin phase: HTTP
+	// cancellation aborts spawn/handshake/login-start, while the
+	// session context owns the process afterwards.
+	beginCtx, stopBegin := mergeCtx(ctx, sessionCtx)
+	c, _, err := s.spawn(sessionCtx, beginCtx, accountID, notify)
 	if err != nil {
+		stopBegin()
 		sessionCancel()
 		release()
 		return LoginSession{}, err
 	}
 	sess.client = c
 
-	// The start call aborts if the HTTP request dies mid-start, but the
-	// session context keeps the process alive once started.
-	startCtx, stopStart := context.WithCancel(sessionCtx)
-	stopped := make(chan struct{})
-	defer close(stopped)
-	go func() {
-		select {
-		case <-ctx.Done():
-			stopStart()
-		case <-stopped:
-		}
-	}()
 	var started loginStartResult
-	err = c.Call(startCtx, "account/login/start", map[string]any{"type": loginType}, &started)
-	stopStart()
+	err = c.Call(beginCtx, "account/login/start", map[string]any{"type": loginType}, &started)
+	stopBegin()
 	if err != nil {
 		sessionCancel()
 		c.Close()
@@ -185,12 +200,15 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 	}
 	// Success claimed by notification is not trusted blindly: verify a
 	// live connected account, refuse insecure storage, then bind.
-	// Terminal errors are sanitized to stable public messages: internal
-	// paths, subprocess errors, RPC payloads, and stderr must never
-	// reach the poll API.
+	// From this point on the provider credential may already exist, so
+	// every failure path reconciles (best-effort logout) before
+	// reporting. Terminal errors stay sanitized: internal paths,
+	// subprocess errors, RPC payloads, and stderr never reach the poll
+	// API.
 	vctx, cancel := context.WithTimeout(ctx, verifyTimeout)
 	defer cancel()
 	if err := s.completeLogin(vctx, accountID, sess); err != nil {
+		s.reconcileOrphan(accountID)
 		sess.setState(LoginFailed, publicLoginError(err))
 	}
 	s.removeLogin(accountID, sess)
@@ -198,17 +216,10 @@ func (s *Service) waitLogin(ctx context.Context, accountID string, sess *loginSe
 
 // completeLogin verifies the login against a live account/read, checks
 // managed storage safety, and commits binding plus identity atomically.
-// Any failure leaves the profile exactly as it was (fail closed).
-//
-// Orphan rule: provider login already placed credentials in the Codex
-// keyring before ai-lb binds anything. If the metadata commit fails,
-// completeLogin best-effort logs out to avoid an unmanaged credential
-// lingering under connected=false. Keyring and SQLite are not one
-// atomic transaction and this is not presented as such; a failed
-// cleanup only yields the generic failed state plus internal
-// diagnostics.
+// Any failure leaves the profile exactly as it was (fail closed). The
+// caller reconciles post-success failures via reconcileOrphan.
 func (s *Service) completeLogin(ctx context.Context, accountID string, sess *loginSession) error {
-	c, home, err := s.spawn(ctx, accountID, nil)
+	c, home, err := s.spawn(ctx, ctx, accountID, nil)
 	if err != nil {
 		return err
 	}
@@ -222,7 +233,6 @@ func (s *Service) completeLogin(ctx context.Context, accountID string, sess *log
 	}
 	_, err = s.accounts.CompleteProviderConnection(ctx, accountID, BindingRefFor(accountID), info.Email)
 	if err != nil {
-		s.reconcileOrphan(ctx, accountID)
 		return err
 	}
 	s.dropQuotaCache(accountID)
@@ -230,13 +240,22 @@ func (s *Service) completeLogin(ctx context.Context, accountID string, sess *log
 	return nil
 }
 
-// reconcileOrphan best-effort logs out after a failed metadata commit
-// so no unmanaged Codex credential survives next to an unbound
-// profile. Errors stay internal; the session still reports failure.
-func (s *Service) reconcileOrphan(ctx context.Context, accountID string) {
-	rctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+// cleanupTimeout bounds the detached orphan-reconciliation logout. It
+// is deliberately short: reconciliation is best-effort, never a
+// background job, and must not stall shutdown.
+const cleanupTimeout = 8 * time.Second
+
+// reconcileOrphan best-effort logs out after provider success when the
+// local commit did not complete, so no unmanaged Codex credential
+// survives next to an unbound profile. It runs on a detached bounded
+// cleanup context — never on an already-cancelled session context —
+// and stays internal: the session still reports the generic failed
+// state. Keyring and SQLite are not one atomic transaction and this is
+// not presented as such.
+func (s *Service) reconcileOrphan(accountID string) {
+	rctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	c, _, err := s.spawn(rctx, accountID, nil)
+	c, _, err := s.spawn(rctx, rctx, accountID, nil)
 	if err != nil {
 		return
 	}
@@ -301,7 +320,7 @@ func (s *Service) Logout(ctx context.Context, accountID string) error {
 	if _, err := s.accounts.Get(ctx, accountID); err != nil {
 		return err
 	}
-	c, home, err := s.spawn(ctx, accountID, nil)
+	c, home, err := s.spawn(ctx, ctx, accountID, nil)
 	if err != nil {
 		return err
 	}
@@ -328,8 +347,20 @@ func (s *Service) Logout(ctx context.Context, accountID string) error {
 }
 
 // Close cancels all pending login sessions. Called on service shutdown.
+// closeWaitTimeout bounds the whole service shutdown: starting
+// attempts and sessions are cancelled first, then Close waits for
+// session cleanup only up to this deadline.
+const closeWaitTimeout = 30 * time.Second
+
+// Close cancels starting attempts and active sessions, then waits
+// boundedly for session cleanup. Starting attempts die with their
+// contexts (their StartLogin callers finish the cleanup); sessions
+// resolve through the normal waiter path.
 func (s *Service) Close() {
 	s.mu.Lock()
+	for _, st := range s.starting {
+		st.cancel()
+	}
 	sessions := make([]*loginSession, 0, len(s.logins))
 	for _, sess := range s.logins {
 		sessions = append(sessions, sess)
@@ -339,8 +370,17 @@ func (s *Service) Close() {
 		if sess.cancel != nil {
 			sess.cancel()
 		}
-		<-sess.done
-		sess.client.Close()
+	}
+	deadline := time.After(closeWaitTimeout)
+	for _, sess := range sessions {
+		select {
+		case <-sess.done:
+		case <-deadline:
+			return
+		}
+		if sess.client != nil {
+			sess.client.Close()
+		}
 	}
 }
 

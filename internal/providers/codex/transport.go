@@ -109,15 +109,16 @@ func NewClient(binary, codexHome, clientVersion string, notify func(notification
 // Start spawns `codex app-server` (binary invoked directly, no shell),
 // performs the initialize handshake, and sends initialized.
 //
-// Lifetime: the process is bound to ctx — cancellation kills it and it
-// can never orphan. A separate startup timeout bounds only the
-// handshake; the process itself outlives Start and dies with ctx or
-// Close.
-func (c *Client) Start(ctx context.Context) error {
-	startCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+// Two contexts separate concerns: lifetime owns the process (cancellation
+// kills it; it can never orphan) while ops bounds the handshake. Login
+// sessions spawn with a detached lifetime and a request-merged ops
+// context, so HTTP cancellation aborts startup without killing a
+// session that already started.
+func (c *Client) Start(lifetime, ops context.Context) error {
+	startCtx, cancel := context.WithTimeout(ops, startupTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.binary, "app-server")
+	cmd := exec.CommandContext(lifetime, c.binary, "app-server")
 	env := restrictedEnv(c.home)
 	env = append(env, c.ExtraEnv...)
 	cmd.Env = env
