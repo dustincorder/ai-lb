@@ -52,7 +52,11 @@ function QuotaView({ quota }: { quota: NonNullable<CodexStatus['quota']> }) {
   )
 }
 
-export function CodexAccount({ account, onChanged }: { account: Account; onChanged: () => void }) {
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`
+}
+
+export function CodexAccount({ account, dataDir, onChanged }: { account: Account; dataDir?: string; onChanged: () => void }) {
   const [status, setStatus] = useState<CodexStatus | null>(null)
   const [login, setLogin] = useState<CodexLogin | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -155,7 +159,8 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
   async function onCopyCommand() {
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-      await navigator.clipboard.writeText(`ai-lb codex --account ${account.id}`)
+      if (!dataDir) throw new Error('data directory unavailable')
+      await navigator.clipboard.writeText(`ai-lb codex --data-dir ${shellArg(dataDir)} --account ${shellArg(account.id)}`)
       setCopiedCommand(true)
       setError(null)
     } catch {
@@ -219,7 +224,7 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
           {status.email && <p>{status.email}</p>}
           {status.plan_type && <p>Plan: {status.plan_type}</p>}
           <p>
-            <code>{`ai-lb codex --account ${account.id}`}</code>{' '}
+            <code>{`ai-lb codex --data-dir ${dataDir ? shellArg(dataDir) : '<data-dir>'} --account ${shellArg(account.id)}`}</code>{' '}
             <button type="button" onClick={() => void onCopyCommand()}>
               Copy CLI command
             </button>

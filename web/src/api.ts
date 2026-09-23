@@ -7,6 +7,7 @@ export interface Settings {
 }
 
 export interface AppInfo {
+  data_dir: string
   version: string
   control: { host: string; port: string; url: string }
   gateway: { host: string; port: string; url: string }

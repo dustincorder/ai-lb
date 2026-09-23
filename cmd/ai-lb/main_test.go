@@ -43,6 +43,15 @@ func TestLauncherHelperProcess(t *testing.T) {
 		<-interrupted
 		return
 	}
+	if strings.Contains(strings.Join(os.Args, "\x1f"), "\x1fsignal-exit") {
+		interrupted := make(chan os.Signal, 1)
+		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+		sig := <-interrupted
+		if sig == syscall.SIGTERM {
+			os.Exit(143)
+		}
+		os.Exit(130)
+	}
 	_, _ = os.Stdout.WriteString("home=" + os.Getenv("CODEX_HOME") + "\n")
 	_, _ = os.Stdout.WriteString("args=" + strings.Join(os.Args, "\x1f") + "\n")
 	_, _ = os.Stderr.WriteString("stderr-from-codex\n")
@@ -92,6 +101,36 @@ func TestLauncherPropagatesExitCode(t *testing.T) {
 	var exitErr *launcher.ExitError
 	if !errors.As(err, &exitErr) || exitErr.Code != 7 {
 		t.Fatalf("error = %v, want exit code 7", err)
+	}
+}
+
+func TestLauncherForwardsSignals(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sig  os.Signal
+		want int
+	}{
+		{name: "SIGINT", sig: os.Interrupt, want: 130},
+		{name: "SIGTERM", sig: syscall.SIGTERM, want: 143},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			want := test.want
+			if runtime.GOOS == "windows" {
+				want = 1
+			}
+			signals := make(chan os.Signal, 1)
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				signals <- test.sig
+			}()
+			err := launcher.Run(context.Background(), launcher.Options{AccountID: "acc-1", Args: []string{"-test.run=TestLauncherHelperProcess", "signal-exit"}}, launcher.RunConfig{
+				Binary: os.Args[0], DataDir: t.TempDir(), Accounts: launcherAccountStore{account: accounts.Account{ID: "acc-1", Provider: providers.Codex, CredentialsRef: "managed"}}, Signals: signals,
+			})
+			var exitErr *launcher.ExitError
+			if !errors.As(err, &exitErr) || exitErr.Code != want {
+				t.Fatalf("error = %v, want exit code %d", err, want)
+			}
+		})
 	}
 }
 

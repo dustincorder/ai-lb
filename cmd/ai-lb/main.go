@@ -98,7 +98,7 @@ func runCodexCommand(args []string) error {
 	if err != nil {
 		binary = ""
 	}
-	ctx, stop := launcher.SignalContext(context.Background())
+	ctx, stop, signals := launcher.SignalContext(context.Background())
 	defer stop()
 	return launcher.Run(ctx, opts, launcher.RunConfig{
 		Binary:   binary,
@@ -107,5 +107,6 @@ func runCodexCommand(args []string) error {
 		Stdin:    os.Stdin,
 		Stdout:   os.Stdout,
 		Stderr:   os.Stderr,
+		Signals:  signals,
 	})
 }

@@ -87,6 +87,7 @@ type RunConfig struct {
 	Stdin    io.Reader
 	Stdout   io.Writer
 	Stderr   io.Writer
+	Signals  <-chan os.Signal
 }
 
 // Run validates the selected profile, prepares its existing managed home,
@@ -128,21 +129,29 @@ func Run(ctx context.Context, opts Options, cfg RunConfig) error {
 	select {
 	case err := <-done:
 		return processResult(err)
+	case sig := <-cfg.Signals:
+		if err := stopChild(cmd.Process, sig); err != nil {
+			_ = cmd.Process.Kill()
+		}
+		return waitForChild(done, cmd.Process)
 	case <-ctx.Done():
-		if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		if err := stopChild(cmd.Process, os.Interrupt); err != nil {
 			// Windows does not implement os.Interrupt for arbitrary child
 			// processes; kill immediately rather than leaving the launcher
 			// blocked until the orphan-prevention timeout.
 			_ = cmd.Process.Kill()
 		}
-		select {
-		case err := <-done:
-			return processResult(err)
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-			return ctx.Err()
-		}
+		return waitForChild(done, cmd.Process)
+	}
+}
+
+func waitForChild(done <-chan error, process *os.Process) error {
+	select {
+	case err := <-done:
+		return processResult(err)
+	case <-time.After(5 * time.Second):
+		_ = process.Kill()
+		return processResult(<-done)
 	}
 }
 
@@ -152,17 +161,20 @@ func processResult(err error) error {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		code := exitErr.ProcessState.ExitCode()
-		if code < 0 {
-			code = 1
-		}
+		code := processStateExitCode(exitErr.ProcessState)
 		return &ExitError{Code: code}
 	}
 	return errors.New("Codex process failed")
 }
 
-// SignalContext is used by main so SIGINT/SIGTERM cancel the launcher and
-// are forwarded to the child before the orphan-prevention kill timeout.
-func SignalContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+// SignalContext gives the launcher both cancellation and the actual OS signal
+// so Unix can preserve SIGINT versus SIGTERM when forwarding to Codex.
+func SignalContext(parent context.Context) (context.Context, context.CancelFunc, <-chan os.Signal) {
+	ctx, cancel := context.WithCancel(parent)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	return ctx, func() {
+		signal.Stop(signals)
+		cancel()
+	}, signals
 }

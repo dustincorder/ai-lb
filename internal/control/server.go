@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -158,7 +159,8 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.Active()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version": Version,
+		"data_dir": filepath.Dir(s.DB.Path),
+		"version":  Version,
 		"build": map[string]string{
 			"version":    s.Build.Version,
 			"commit":     s.Build.Commit,

@@ -140,17 +140,17 @@ describe('CodexAccount', () => {
       },
     ]
     let changed = 0
-    render(<CodexAccount account={profile} onChanged={() => changed++} />)
+    render(<CodexAccount account={profile} dataDir="/tmp/ai-lb-data" onChanged={() => changed++} />)
     expect(await screen.findByText('Connected')).toBeInTheDocument()
     expect(screen.getByText('u@example.com')).toBeInTheDocument()
     expect(screen.getByText('Plan: plus')).toBeInTheDocument()
-    expect(screen.getByText('ai-lb codex --account acc-1')).toBeInTheDocument()
+    expect(screen.getByText('ai-lb codex --data-dir /tmp/ai-lb-data --account acc-1')).toBeInTheDocument()
     expect(screen.getByText(/used 30%/)).toBeInTheDocument()
 
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     await user.click(screen.getByRole('button', { name: 'Copy CLI command' }))
-    expect(writeText).toHaveBeenCalledWith('ai-lb codex --account acc-1')
+    expect(writeText).toHaveBeenCalledWith('ai-lb codex --data-dir /tmp/ai-lb-data --account acc-1')
 
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
     await user.click(screen.getByRole('button', { name: 'Copy CLI command' }))
@@ -163,6 +163,23 @@ describe('CodexAccount', () => {
     await user.click(await screen.findByRole('button', { name: 'Confirm disconnect' }))
     expect(await screen.findByText('Not connected')).toBeInTheDocument()
     expect(changed).toBe(1)
+  })
+
+  it('quotes custom data directories when copying the CLI command', async () => {
+    const user = userEvent.setup()
+    routes = [
+      {
+        method: 'GET',
+        match: (u) => u.endsWith('/codex/status'),
+        respond: () => Response.json({ connected: true, requires_openai_auth: true, observed_at: '' }),
+      },
+    ]
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<CodexAccount account={{ ...profile, id: 'id-without-shell' }} dataDir="/tmp/ai lb data" onChanged={() => undefined} />)
+    expect(await screen.findByText("ai-lb codex --data-dir '/tmp/ai lb data' --account id-without-shell")).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy CLI command' }))
+    expect(writeText).toHaveBeenCalledWith("ai-lb codex --data-dir '/tmp/ai lb data' --account id-without-shell")
   })
 
   it('shows provider errors without crashing', async () => {
