@@ -4,6 +4,7 @@ import {
   fetchCodexLogin,
   fetchCodexStatus,
   logoutCodex,
+  launchCodex,
   refreshCodexQuota,
   startCodexLogin,
   type Account,
@@ -58,6 +59,8 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [workingDir, setWorkingDir] = useState('')
+  const [launched, setLaunched] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
 
   useEffect(() => {
@@ -151,6 +154,20 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
     }
   }
 
+  async function onLaunch() {
+    setError(null)
+    setLaunched(false)
+    setBusy(true)
+    try {
+      await launchCodex(account.id, workingDir)
+      setLaunched(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to launch Codex CLI.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div>
       {error && <p role="alert">{error}</p>}
@@ -205,6 +222,14 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
           <p>Connected</p>
           {status.email && <p>{status.email}</p>}
           {status.plan_type && <p>Plan: {status.plan_type}</p>}
+          <label>
+            Working directory (optional)
+            <input aria-label="Working directory" value={workingDir} onChange={(e) => setWorkingDir(e.target.value)} />
+          </label>{' '}
+          <button type="button" onClick={() => void onLaunch()} disabled={busy}>
+            Launch Codex CLI
+          </button>
+          {launched && <p role="status">Codex CLI launched.</p>}
           {status.quota && <QuotaView quota={status.quota} />}
           <button type="button" onClick={() => void onRefresh()} disabled={busy}>
             Refresh

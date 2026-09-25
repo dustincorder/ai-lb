@@ -7,6 +7,7 @@ export interface Settings {
 }
 
 export interface AppInfo {
+  data_dir: string
   version: string
   control: { host: string; port: string; url: string }
   gateway: { host: string; port: string; url: string }
@@ -246,6 +247,17 @@ export async function cancelCodexLogin(id: string, loginId?: string): Promise<Co
 export async function fetchCodexStatus(id: string): Promise<CodexStatus> {
   const res = await check(await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/status`))
   return (await res.json()) as CodexStatus
+}
+
+export async function launchCodex(id: string, workingDir: string): Promise<{ status: string }> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ working_dir: workingDir }),
+    }),
+  )
+  return (await res.json()) as { status: string }
 }
 
 export async function refreshCodexQuota(id: string): Promise<CodexQuota> {

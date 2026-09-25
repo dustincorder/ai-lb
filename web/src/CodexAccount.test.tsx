@@ -138,13 +138,25 @@ describe('CodexAccount', () => {
         match: (u) => u.endsWith('/codex/logout'),
         respond: () => Response.json({ connected: false }),
       },
+      {
+        method: 'POST',
+        match: (u) => u.endsWith('/codex/launch'),
+        respond: () => Response.json({ status: 'launched' }),
+      },
     ]
     let changed = 0
     render(<CodexAccount account={profile} onChanged={() => changed++} />)
     expect(await screen.findByText('Connected')).toBeInTheDocument()
     expect(screen.getByText('u@example.com')).toBeInTheDocument()
     expect(screen.getByText('Plan: plus')).toBeInTheDocument()
+    expect(screen.queryByText('acc-1')).not.toBeInTheDocument()
+    expect(screen.queryByText(/ai-lb codex/)).not.toBeInTheDocument()
     expect(screen.getByText(/used 30%/)).toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: 'Working directory' }), '/tmp/project with spaces')
+    await user.click(screen.getByRole('button', { name: 'Launch Codex CLI' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Codex CLI launched.')
+    expect(calls.some((c) => c.includes('/codex/launch'))).toBe(true)
 
     await user.click(screen.getByRole('button', { name: 'Refresh' }))
     expect(calls.some((c) => c.includes('/codex/refresh'))).toBe(true)
@@ -153,6 +165,25 @@ describe('CodexAccount', () => {
     await user.click(await screen.findByRole('button', { name: 'Confirm disconnect' }))
     expect(await screen.findByText('Not connected')).toBeInTheDocument()
     expect(changed).toBe(1)
+  })
+
+  it('shows launch errors', async () => {
+    const user = userEvent.setup()
+    routes = [
+      {
+        method: 'GET',
+        match: (u) => u.endsWith('/codex/status'),
+        respond: () => Response.json({ connected: true, requires_openai_auth: true, observed_at: '' }),
+      },
+      {
+        method: 'POST',
+        match: (u) => u.endsWith('/codex/launch'),
+        respond: () => new Response(JSON.stringify({ error: 'terminal_unavailable' }), { status: 503 }),
+      },
+    ]
+    render(<CodexAccount account={profile} onChanged={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: 'Launch Codex CLI' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('terminal_unavailable')
   })
 
   it('shows provider errors without crashing', async () => {

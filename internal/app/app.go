@@ -21,6 +21,7 @@ import (
 	"github.com/dustincorder/ai-lb/internal/gateway"
 	"github.com/dustincorder/ai-lb/internal/providers"
 	"github.com/dustincorder/ai-lb/internal/providers/codex"
+	"github.com/dustincorder/ai-lb/internal/terminal"
 )
 
 // shutdownTimeout bounds graceful drain of both HTTP servers.
@@ -88,6 +89,7 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 			build.Version,
 			accService,
 		),
+		terminal.New(),
 	)
 	a.control = &http.Server{
 		Handler:           a.controlRoutes,
@@ -142,6 +144,7 @@ func resolveCodexBinary() string {
 	}
 	return path
 }
+
 // currentSettings returns the settings active for this run.
 func (a *App) currentSettings() config.Settings {
 	return a.settings.Load().(config.Settings)

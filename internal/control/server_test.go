@@ -105,7 +105,8 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestAppEndpointShape(t *testing.T) {
-	srv := httptest.NewServer(testServer(t))
+	s := testServer(t)
+	srv := httptest.NewServer(s)
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/app")
@@ -121,6 +122,9 @@ func TestAppEndpointShape(t *testing.T) {
 		if _, ok := body[key]; !ok {
 			t.Errorf("missing key %q in /api/app", key)
 		}
+	}
+	if got, want := body["data_dir"], filepath.Dir(s.DB.Path); got != want {
+		t.Errorf("data_dir = %v, want %q", got, want)
 	}
 	raw, _ := json.Marshal(body)
 	if strings.Contains(string(raw), "auth") || strings.Contains(string(raw), "token") {

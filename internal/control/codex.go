@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/providers/codex"
+	"github.com/dustincorder/ai-lb/internal/terminal"
 )
 
 // codexBackend is the Codex integration surface the handlers need. The
@@ -109,6 +112,80 @@ func codexError(w http.ResponseWriter, err error) {
 	default:
 		writeJSON(w, http.StatusInternalServerError, errorBody("internal_error", "unexpected failure"))
 	}
+}
+
+func (s *Server) handleCodexLaunch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody("method_not_allowed", "method not allowed"))
+		return
+	}
+	a, ok, h := s.requireCodexAccount(r)
+	if !ok {
+		h.ServeHTTP(w, r)
+		return
+	}
+	if !a.Connected() {
+		writeJSON(w, http.StatusConflict, errorBody("codex_not_connected", "account is not connected"))
+		return
+	}
+	d := s.Codex.Detect(r.Context())
+	if !d.Installed {
+		writeJSON(w, http.StatusServiceUnavailable, errorBody("codex_not_installed", "Codex CLI is not installed"))
+		return
+	}
+	home, err := codex.ManagedHome(filepath.Dir(s.DB.Path), a.ID)
+	if err != nil || codex.PlaintextAuthPresent(home) {
+		writeJSON(w, http.StatusConflict, errorBody("unsafe_managed_home", "managed Codex account storage is unavailable"))
+		return
+	}
+	var req struct {
+		WorkingDir string `json:"working_dir"`
+	}
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	workingDir, err := launchWorkingDir(req.WorkingDir)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody("invalid_working_directory", "working directory must be an existing directory"))
+		return
+	}
+	executable, err := s.Executable()
+	if err != nil || executable == "" {
+		writeJSON(w, http.StatusInternalServerError, errorBody("launch_failed", "Codex CLI could not be launched"))
+		return
+	}
+	if err := s.Terminal.Launch(terminal.Request{
+		Executable: executable,
+		Args:       []string{"codex", "--data-dir", filepath.Dir(s.DB.Path), "--account", a.ID},
+		WorkingDir: workingDir,
+	}); err != nil {
+		if errors.Is(err, terminal.ErrUnavailable) {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody("terminal_unavailable", "no supported terminal is available"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorBody("launch_failed", "Codex CLI could not be launched"))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "launched"})
+}
+
+func launchWorkingDir(value string) (string, error) {
+	if value == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		value = home
+	}
+	path, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("not a directory")
+	}
+	return path, nil
 }
 
 // requireCodexAccount loads the profile and rejects anything that is
