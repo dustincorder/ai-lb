@@ -21,12 +21,14 @@ type Launcher interface {
 type System struct {
 	LookPath func(string) (string, error)
 	Start    func(*exec.Cmd) error
+	Reap     func(*exec.Cmd)
 }
 
 func New() *System {
 	return &System{
 		LookPath: exec.LookPath,
 		Start:    func(cmd *exec.Cmd) error { return cmd.Start() },
+		Reap:     func(cmd *exec.Cmd) { _ = cmd.Wait() },
 	}
 }
 
@@ -42,6 +44,9 @@ func (s *System) start(path string, args []string, dir string) error {
 	cmd.Dir = dir
 	if err := s.Start(cmd); err != nil {
 		return ErrUnavailable
+	}
+	if s.Reap != nil {
+		go s.Reap(cmd)
 	}
 	return nil
 }

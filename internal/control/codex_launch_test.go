@@ -45,14 +45,9 @@ func TestCodexLaunchValidatesAndBuildsInvocation(t *testing.T) {
 	if err := accounts.NewRepository(database.Conn).SetCredentialsRef(context.Background(), account.ID, "opaque", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	binDir := t.TempDir()
-	codexBin := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\nprintf 'fake\\n'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
 	capture := &launchCapture{}
-	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, codex.NewService(codexBin, filepath.Dir(database.Path), "test", acc), capture)
+	stub := &stubCodex{detection: codex.Detection{Installed: true}}
+	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, stub, capture)
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	work := t.TempDir()
@@ -122,8 +117,8 @@ func TestCodexLaunchRejectsMissingBinary(t *testing.T) {
 	if err := accounts.NewRepository(database.Conn).SetCredentialsRef(context.Background(), account.ID, "opaque", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", t.TempDir())
-	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, codex.NewService("", filepath.Dir(database.Path), "test", acc), &launchCapture{})
+	stub := &stubCodex{detection: codex.Detection{Installed: false}}
+	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, stub, &launchCapture{})
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	if got := postLaunch(t, srv.URL, account.ID, `{}`); got != "codex_not_installed" {
@@ -154,14 +149,9 @@ func TestCodexLaunchRejectsInvalidInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binDir := t.TempDir()
-	codexBin := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(codexBin, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir)
 	capture := &launchCapture{}
-	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, codex.NewService(codexBin, filepath.Dir(database.Path), "test", acc), capture)
+	stub := &stubCodex{detection: codex.Detection{Installed: true}}
+	s := New(database, func() config.Settings { return config.Defaults() }, build.Info{Version: "test", Channel: "dev"}, acc, registry, stub, capture)
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	file := filepath.Join(t.TempDir(), "file")

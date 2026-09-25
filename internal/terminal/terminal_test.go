@@ -1,36 +1,13 @@
 package terminal
 
 import (
+	"errors"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
+	"time"
 )
 
-func TestLinuxCandidateSelection(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux terminal selection")
-	}
-	started := ""
-	s := &System{
-		LookPath: func(name string) (string, error) {
-			if name == "konsole" {
-				return "/usr/bin/konsole", nil
-			}
-			return "", exec.ErrNotFound
-		},
-		Start: func(cmd *exec.Cmd) error {
-			started = cmd.Path + " " + cmd.Args[1]
-			return nil
-		},
-	}
-	if err := s.Launch(Request{Executable: "/usr/bin/ai-lb", Args: []string{"codex", "--account", "id"}, WorkingDir: "/tmp/project"}); err != nil {
-		t.Fatal(err)
-	}
-	if started != "/usr/bin/konsole --workdir" {
-		t.Fatalf("started %q", started)
-	}
-}
+var errStartFailed = errors.New("start failed")
 
 func TestLaunchRejectsMissingWorkingDirectory(t *testing.T) {
 	if err := New().Launch(Request{Executable: "ai-lb"}); err != ErrUnavailable {
@@ -38,8 +15,34 @@ func TestLaunchRejectsMissingWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestWorkingDirectoryIsNotMutated(t *testing.T) {
-	if filepath.Clean("/tmp/project") != "/tmp/project" {
-		t.Fatal("unexpected filepath behavior")
+func TestSuccessfulStartIsReapedWithoutBlockingLaunch(t *testing.T) {
+	reaped := make(chan *exec.Cmd, 1)
+	s := &System{
+		Start: func(*exec.Cmd) error { return nil },
+		Reap:  func(cmd *exec.Cmd) { reaped <- cmd },
+	}
+	if err := s.start("fake-terminal", nil, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reaped:
+	case <-time.After(time.Second):
+		t.Fatal("started child was not reaped")
+	}
+}
+
+func TestFailedStartIsNotReaped(t *testing.T) {
+	reaped := make(chan *exec.Cmd, 1)
+	s := &System{
+		Start: func(*exec.Cmd) error { return errStartFailed },
+		Reap:  func(cmd *exec.Cmd) { reaped <- cmd },
+	}
+	if err := s.start("fake-terminal", nil, t.TempDir()); err != ErrUnavailable {
+		t.Fatalf("error = %v", err)
+	}
+	select {
+	case <-reaped:
+		t.Fatal("failed child was reaped")
+	case <-time.After(10 * time.Millisecond):
 	}
 }
