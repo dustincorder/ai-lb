@@ -1,44 +1,9 @@
 import { useEffect, useState } from 'react'
-import { fetchApp, fetchGateway, type GatewayStatus } from '../api'
+import { fetchApp, fetchGateway, type AppInfo, type GatewayStatus } from '../api'
+import { Alert, Badge, Card, CopyButton, PageHeader, Spinner } from '../components'
 
 export function Gateway() {
-  const [gatewayUrl, setGatewayUrl] = useState<string>('')
-  const [status, setStatus] = useState<GatewayStatus | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    fetchApp()
-      .then((app) => {
-        setGatewayUrl(app.gateway.url)
-        return fetchGateway()
-      })
-      .then(setStatus)
-      .catch((e: Error) => setError(e.message))
-  }, [])
-
-  return (
-    <section>
-      <h2>Gateway</h2>
-      {error && <p role="alert">Failed to load gateway status: {error}</p>}
-      {!error && !status && <p>Loading…</p>}
-      {gatewayUrl && (
-        <dl>
-          <dt>URL</dt>
-          <dd>{gatewayUrl}</dd>
-        </dl>
-      )}
-      {status && (
-        <dl>
-          <dt>Status</dt>
-          <dd>{status.reachable ? (status.status ?? 'reachable') : 'unreachable'}</dd>
-          {!status.reachable && status.error && (
-            <>
-              <dt>Error</dt>
-              <dd>{status.error}</dd>
-            </>
-          )}
-        </dl>
-      )}
-    </section>
-  )
+  const [app, setApp] = useState<AppInfo | null>(null); const [status, setStatus] = useState<GatewayStatus | null>(null); const [error, setError] = useState<string | null>(null)
+  useEffect(() => { Promise.all([fetchApp(), fetchGateway()]).then(([a, g]) => { setApp(a); setStatus(g) }).catch((e: Error) => setError(e.message)) }, [])
+  return <><PageHeader eyebrow="Network" title="Gateway" description="The local gateway is health-only today. OpenAI-compatible proxying is not implemented yet." />{error && <Alert>{error}</Alert>}{!app && !error && <div className="loading-block"><Spinner label="Loading gateway" /></div>}{app && status && <Card><div className="status-line"><div><div className="metric-label">Gateway listener</div><div className="metric-value">{status.reachable ? 'Running' : 'Unavailable'}</div></div><Badge tone={status.reachable ? 'success' : 'danger'}>{status.reachable ? 'Healthy' : 'Offline'}</Badge></div><div className="technical section">{app.gateway.url}</div><div className="account-actions section"><CopyButton value={app.gateway.url} /></div></Card>}<Card className="section"><div className="metric-label">API proxy</div><h2>Not implemented yet</h2><p className="metric-detail">Load balancing and OpenAI-compatible endpoints are planned. This page reports the listener honestly.</p></Card></>
 }

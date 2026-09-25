@@ -21,7 +21,7 @@ function mockFetch() {
     if (url === '/api/providers') {
       return Response.json({
         providers: [
-          { id: 'codex', display_name: 'Codex', implemented: false },
+          { id: 'codex', display_name: 'Codex', implemented: true },
           { id: 'antigravity', display_name: 'Antigravity', implemented: false },
         ],
       })
@@ -46,7 +46,7 @@ function mockFetch() {
       store.push(created)
       return new Response(JSON.stringify(created), { status: 201 })
     }
-    const match = url.match(/^\/api\/accounts\/(.+)$/)
+    const match = url.match(/^\/api\/accounts\/([^/]+)$/)
     if (match) {
       const id = decodeURIComponent(match[1])
       const idx = store.findIndex((a) => a.id === id)
@@ -60,6 +60,9 @@ function mockFetch() {
         return new Response(null, { status: 204 })
       }
       return new Response(JSON.stringify({ error: 'account_not_found' }), { status: 404 })
+    }
+    if (url.includes('/codex/status')) {
+      return Response.json({ connected: false, requires_openai_auth: true, observed_at: '' })
     }
     return new Response('{}', { status: 200 })
   })
@@ -76,9 +79,7 @@ describe('Accounts page', () => {
     render(<Accounts />)
     expect(await screen.findByText('No accounts yet.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add account' })).toBeInTheDocument()
-    expect(
-      screen.getByText(/Codex authentication is available/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/Codex authentication is available/i)).toBeInTheDocument()
   })
 
   it('loads provider options and lists accounts', async () => {
@@ -105,13 +106,13 @@ describe('Accounts page', () => {
 
     const provider = (await screen.findByLabelText('Provider')) as HTMLSelectElement
     expect(provider.options.length).toBe(2)
-    await user.selectOptions(provider, 'antigravity')
+    await user.selectOptions(provider, 'codex')
     await user.type(screen.getByLabelText('Label'), 'Work')
     await user.type(screen.getByLabelText(/Identity/), 'work@example.com')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByText('Work')).toBeInTheDocument()
-    expect(screen.getByText('(Antigravity)')).toBeInTheDocument()
+    expect(screen.getByText('(Codex)')).toBeInTheDocument()
     expect(store.length).toBe(1)
   })
 
@@ -155,5 +156,34 @@ describe('Accounts page', () => {
     await user.click(within(row).getByRole('button', { name: 'Confirm delete' }))
     expect(await screen.findByText('No accounts yet.')).toBeInTheDocument()
     expect(store.length).toBe(0)
+  })
+
+  it('marks implemented:false provider as unavailable and coming soon', async () => {
+    const user = userEvent.setup()
+    render(<Accounts />)
+    await user.click(await screen.findByRole('button', { name: 'Add account' }))
+
+    const provider = (await screen.findByLabelText('Provider')) as HTMLSelectElement
+    const antigravity = within(provider).getByRole('option', { name: /Antigravity/ }) as HTMLOptionElement
+    expect(antigravity.disabled).toBe(true)
+    expect(antigravity.textContent).toContain('Coming soon')
+  })
+
+  it('does not expose internal UUIDs or credentials in the UI', async () => {
+    store = [
+      {
+        id: 'uuid-secret-999',
+        provider: 'codex',
+        label: 'Secret Profile',
+        identity: 'secret@example.com',
+        enabled: true,
+        connected: false,
+      },
+    ]
+    render(<Accounts />)
+    expect(await screen.findByText('Secret Profile')).toBeInTheDocument()
+    expect(screen.queryByText('uuid-secret-999')).not.toBeInTheDocument()
+    expect(screen.queryByText(/credentials_ref/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/provider_account_id/i)).not.toBeInTheDocument()
   })
 })

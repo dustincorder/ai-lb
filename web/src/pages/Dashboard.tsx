@@ -1,36 +1,12 @@
 import { useEffect, useState } from 'react'
-import { fetchApp, type AppInfo } from '../api'
+import { fetchAccounts, fetchApp, fetchGateway, fetchProviders, type Account, type AppInfo, type GatewayStatus, type Provider } from '../api'
+import { Alert, Badge, Card, PageHeader, Spinner } from '../components'
 
 export function Dashboard() {
-  const [app, setApp] = useState<AppInfo | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    fetchApp().then(setApp).catch((e: Error) => setError(e.message))
-  }, [])
-
-  if (error) return <p role="alert">Failed to load service info: {error}</p>
-  if (!app) return <p>Loading…</p>
-
-  return (
-    <section>
-      <h2>Dashboard</h2>
-      <dl>
-        <dt>Version</dt>
-        <dd>{app.version}</dd>
-        <dt>Control</dt>
-        <dd>{app.control.url}</dd>
-        <dt>Gateway</dt>
-        <dd>{app.gateway.url}</dd>
-        <dt>Database</dt>
-        <dd>
-          {app.database.status} ({app.database.path})
-        </dd>
-        <dt>Platform</dt>
-        <dd>
-          {app.platform.os}/{app.platform.arch}
-        </dd>
-      </dl>
-    </section>
-  )
+  const [app, setApp] = useState<AppInfo | null>(null); const [gateway, setGateway] = useState<GatewayStatus | null>(null); const [accounts, setAccounts] = useState<Account[]>([]); const [providers, setProviders] = useState<Provider[]>([]); const [error, setError] = useState<string | null>(null)
+  useEffect(() => { Promise.all([fetchApp(), fetchGateway(), fetchAccounts(), fetchProviders()]).then(([a, g, ac, p]) => { setApp(a); setGateway(g); setAccounts(ac); setProviders(p) }).catch((e: Error) => setError(e.message)) }, [])
+  if (error) return <><PageHeader eyebrow="Overview" title="Dashboard" description="A local view of your ai-lb service." /><Alert>{error}</Alert></>
+  if (!app || !gateway) return <div className="loading-block"><Spinner label="Loading service overview" /></div>
+  const connected = accounts.filter((a) => a.connected).length; const codex = providers.find((p) => p.id === 'codex')
+  return <><PageHeader eyebrow="Overview" title="Dashboard" description="A quiet command center for your local AI accounts and services." /><div className="card-grid"><Card><div className="metric-label">Service</div><div className="status-line"><strong className="metric-value">Running</strong><Badge tone="success">Healthy</Badge></div><div className="metric-detail">{app.version} · {app.platform.os}/{app.platform.arch}</div></Card><Card><div className="metric-label">Accounts</div><div className="metric-value">{accounts.length}</div><div className="metric-detail">{connected} connected profiles</div></Card><Card><div className="metric-label">Gateway</div><div className="status-line"><strong className="metric-value">{gateway.reachable ? 'Running' : 'Unavailable'}</strong><Badge tone={gateway.reachable ? 'success' : 'danger'}>{gateway.reachable ? 'Healthy' : 'Offline'}</Badge></div><div className="metric-detail technical">{app.gateway.url}</div></Card></div><div className="card-grid section"><Card><div className="metric-label">Web UI</div><div className="technical">{app.control.url}</div><p className="metric-detail">Control plane is bound to loopback.</p></Card><Card><div className="metric-label">Codex</div><div className="status-line"><strong>{codex?.implemented ? 'Available' : 'Available'}</strong><Badge tone="success">Integrated</Badge></div><p className="metric-detail">Managed accounts and isolated CLI homes.</p></Card><Card><div className="metric-label">Antigravity</div><div className="status-line"><strong>Coming soon</strong><Badge>Planned</Badge></div><p className="metric-detail">Provider integration is not implemented yet.</p></Card></div><Card className="section"><div className="section-title"><h2>Local data</h2><Badge tone="success">{app.database.status}</Badge></div><div className="technical">{app.data_dir}</div><p className="metric-detail">Database and managed provider state stay on this machine.</p></Card></>
 }

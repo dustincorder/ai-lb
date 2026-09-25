@@ -167,6 +167,38 @@ describe('CodexAccount', () => {
     expect(changed).toBe(1)
   })
 
+  it('shows stale quota indication and quota progress bar', async () => {
+    routes = [
+      {
+        method: 'GET',
+        match: (u) => u.endsWith('/codex/status'),
+        respond: () =>
+          Response.json({
+            connected: true,
+            email: 'stale@example.com',
+            plan_type: 'pro',
+            requires_openai_auth: true,
+            observed_at: '',
+            quota: {
+              windows: [
+                { limit_id: 'weekly', limit_name: 'Weekly Quota', used_percent: 45, remaining_percent: 55 },
+              ],
+              updated_at: '',
+              stale: true,
+            },
+          }),
+      },
+    ]
+    render(<CodexAccount account={profile} onChanged={() => undefined} />)
+    expect(await screen.findByText('Stale')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: '55% remaining' })).toHaveAttribute(
+      'aria-valuenow',
+      '55',
+    )
+    expect(screen.getByText('55% remaining')).toBeInTheDocument()
+    expect(screen.getByText(/used 45%/)).toBeInTheDocument()
+  })
+
   it('shows launch errors', async () => {
     const user = userEvent.setup()
     routes = [
