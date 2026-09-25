@@ -1,8 +1,10 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +53,7 @@ func TestCodexLaunchValidatesAndBuildsInvocation(t *testing.T) {
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	work := t.TempDir()
-	request, err := http.NewRequest(http.MethodPost, srv.URL+"/api/accounts/"+account.ID+"/codex/launch", stringsReader(`{"working_dir":"`+work+`"}`))
+	request, err := http.NewRequest(http.MethodPost, srv.URL+"/api/accounts/"+account.ID+"/codex/launch", launchBody(t, work))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,15 +161,19 @@ func TestCodexLaunchRejectsInvalidInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	missingDir := filepath.Join(t.TempDir(), "missing")
-	for _, test := range []struct{ name, id, body, want string }{
-		{"unknown", "missing", `{}`, "account_not_found"},
-		{"disconnected", disconnected.ID, `{}`, "codex_not_connected"},
-		{"wrong provider", wrong.ID, `{}`, "invalid_provider"},
-		{"file", connected.ID, `{"working_dir":"` + file + `"}`, "invalid_working_directory"},
-		{"missing dir", connected.ID, `{"working_dir":"` + missingDir + `"}`, "invalid_working_directory"},
+	for _, test := range []struct{ name, id, workingDir, want string }{
+		{"unknown", "missing", "", "account_not_found"},
+		{"disconnected", disconnected.ID, "", "codex_not_connected"},
+		{"wrong provider", wrong.ID, "", "invalid_provider"},
+		{"file", connected.ID, file, "invalid_working_directory"},
+		{"missing dir", connected.ID, missingDir, "invalid_working_directory"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/accounts/"+test.id+"/codex/launch", stringsReader(test.body))
+			var requestBody io.Reader = stringsReader(`{}`)
+			if test.workingDir != "" {
+				requestBody = launchBody(t, test.workingDir)
+			}
+			request, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/accounts/"+test.id+"/codex/launch", requestBody)
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
@@ -212,6 +218,15 @@ func postLaunch(t *testing.T, baseURL, accountID, body string) string {
 		t.Fatal(err)
 	}
 	return result["error"]
+}
+
+func launchBody(t *testing.T, workingDir string) io.Reader {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"working_dir": workingDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(body)
 }
 
 func stringsReader(value string) *strings.Reader { return strings.NewReader(value) }
