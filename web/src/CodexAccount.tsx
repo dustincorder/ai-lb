@@ -4,6 +4,7 @@ import {
   fetchCodexLogin,
   fetchCodexStatus,
   logoutCodex,
+  launchCodex,
   refreshCodexQuota,
   startCodexLogin,
   type Account,
@@ -52,17 +53,14 @@ function QuotaView({ quota }: { quota: NonNullable<CodexStatus['quota']> }) {
   )
 }
 
-function shellArg(value: string): string {
-  return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`
-}
-
-export function CodexAccount({ account, dataDir, onChanged }: { account: Account; dataDir?: string; onChanged: () => void }) {
+export function CodexAccount({ account, onChanged }: { account: Account; onChanged: () => void }) {
   const [status, setStatus] = useState<CodexStatus | null>(null)
   const [login, setLogin] = useState<CodexLogin | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [copiedCommand, setCopiedCommand] = useState(false)
+  const [workingDir, setWorkingDir] = useState('')
+  const [launched, setLaunched] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
 
   useEffect(() => {
@@ -156,16 +154,17 @@ export function CodexAccount({ account, dataDir, onChanged }: { account: Account
     }
   }
 
-  async function onCopyCommand() {
+  async function onLaunch() {
+    setError(null)
+    setLaunched(false)
+    setBusy(true)
     try {
-      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-      if (!dataDir) throw new Error('data directory unavailable')
-      await navigator.clipboard.writeText(`ai-lb codex --data-dir ${shellArg(dataDir)} --account ${shellArg(account.id)}`)
-      setCopiedCommand(true)
-      setError(null)
-    } catch {
-      setCopiedCommand(false)
-      setError('Unable to copy the CLI command.')
+      await launchCodex(account.id, workingDir)
+      setLaunched(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to launch Codex CLI.')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -223,13 +222,14 @@ export function CodexAccount({ account, dataDir, onChanged }: { account: Account
           <p>Connected</p>
           {status.email && <p>{status.email}</p>}
           {status.plan_type && <p>Plan: {status.plan_type}</p>}
-          <p>
-            <code>{`ai-lb codex --data-dir ${dataDir ? shellArg(dataDir) : '<data-dir>'} --account ${shellArg(account.id)}`}</code>{' '}
-            <button type="button" onClick={() => void onCopyCommand()}>
-              Copy CLI command
-            </button>
-            {copiedCommand && <span> Copied.</span>}
-          </p>
+          <label>
+            Working directory (optional)
+            <input aria-label="Working directory" value={workingDir} onChange={(e) => setWorkingDir(e.target.value)} />
+          </label>{' '}
+          <button type="button" onClick={() => void onLaunch()} disabled={busy}>
+            Launch Codex CLI
+          </button>
+          {launched && <p role="status">Codex CLI launched.</p>}
           {status.quota && <QuotaView quota={status.quota} />}
           <button type="button" onClick={() => void onRefresh()} disabled={busy}>
             Refresh

@@ -249,6 +249,17 @@ export async function fetchCodexStatus(id: string): Promise<CodexStatus> {
   return (await res.json()) as CodexStatus
 }
 
+export async function launchCodex(id: string, workingDir: string): Promise<{ status: string }> {
+  const res = await check(
+    await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ working_dir: workingDir }),
+    }),
+  )
+  return (await res.json()) as { status: string }
+}
+
 export async function refreshCodexQuota(id: string): Promise<CodexQuota> {
   const res = await check(
     await fetch(`/api/accounts/${encodeURIComponent(id)}/codex/refresh`, { method: 'POST' }),

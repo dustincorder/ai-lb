@@ -72,8 +72,12 @@ go build -o ai-lb ./cmd/ai-lb
 
 ### Launch Codex with a managed account
 
-For a connected Codex profile, launch the official CLI against that profile's
-isolated managed home:
+For a connected Codex profile, use **Launch Codex CLI** in the Accounts page.
+Optionally enter an existing working directory; ai-lb opens a user-visible
+terminal running the official CLI against that profile's isolated managed home.
+The browser request returns after the terminal session starts.
+
+The lower-level command remains available for automation and debugging:
 
 ```bash
 ai-lb codex --account <account-id>

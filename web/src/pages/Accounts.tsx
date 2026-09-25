@@ -3,11 +3,9 @@ import {
   createAccount,
   deleteAccount,
   fetchAccounts,
-  fetchApp,
   fetchProviders,
   updateAccount,
   type Account,
-  type AppInfo,
   type Provider,
 } from '../api'
 import { CodexAccount } from '../CodexAccount'
@@ -15,7 +13,6 @@ import { CodexAccount } from '../CodexAccount'
 export function Accounts() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [app, setApp] = useState<AppInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -36,10 +33,9 @@ export function Accounts() {
 
   async function reload() {
     try {
-      const [ps, as, appInfo] = await Promise.all([fetchProviders(), fetchAccounts(), fetchApp()])
+      const [ps, as] = await Promise.all([fetchProviders(), fetchAccounts()])
       setProviders(ps)
       setAccounts(as)
-      setApp(appInfo)
       if (!provider && ps.length > 0) setProvider(ps[0].id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load accounts.')
@@ -170,7 +166,7 @@ export function Accounts() {
                       {a.enabled ? 'Disable' : 'Enable'}
                     </button>{' '}
                     {a.provider === 'codex' && (
-                      <CodexAccount account={a} dataDir={app?.data_dir} onChanged={() => void reload()} />
+                      <CodexAccount account={a} onChanged={() => void reload()} />
                     )}
                     {confirmDeleteId === a.id ? (
                       <span>

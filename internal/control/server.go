@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"github.com/dustincorder/ai-lb/internal/config"
 	"github.com/dustincorder/ai-lb/internal/db"
 	"github.com/dustincorder/ai-lb/internal/providers"
+	"github.com/dustincorder/ai-lb/internal/terminal"
 	"github.com/dustincorder/ai-lb/internal/update"
 	web "github.com/dustincorder/ai-lb/web"
 )
@@ -44,28 +46,36 @@ const updateRepoName = "ai-lb"
 
 // Server is the control-plane HTTP server.
 type Server struct {
-	DB        *db.DB
-	Active    func() config.Settings
-	Build     build.Info
-	Updates   *update.Checker
-	Accounts  *accounts.Service
-	Providers *providers.Registry
-	Codex     codexBackend
-	mux       *http.ServeMux
+	DB         *db.DB
+	Active     func() config.Settings
+	Build      build.Info
+	Updates    *update.Checker
+	Accounts   *accounts.Service
+	Providers  *providers.Registry
+	Codex      codexBackend
+	Terminal   terminal.Launcher
+	Executable func() (string, error)
+	mux        *http.ServeMux
 }
 
 // New builds the control server routes. active reports the settings the
 // running listeners bound; the database holds the configured settings.
-func New(database *db.DB, active func() config.Settings, current build.Info, acc *accounts.Service, registry *providers.Registry, codexSvc codexBackend) *Server {
+func New(database *db.DB, active func() config.Settings, current build.Info, acc *accounts.Service, registry *providers.Registry, codexSvc codexBackend, launchers ...terminal.Launcher) *Server {
+	launcher := terminal.Launcher(terminal.New())
+	if len(launchers) > 0 && launchers[0] != nil {
+		launcher = launchers[0]
+	}
 	s := &Server{
-		DB:        database,
-		Active:    active,
-		Build:     current,
-		Updates:   update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
-		Accounts:  acc,
-		Providers: registry,
-		Codex:     codexSvc,
-		mux:       http.NewServeMux(),
+		DB:         database,
+		Active:     active,
+		Build:      current,
+		Updates:    update.NewChecker(update.NewClient(updateRepoOwner, updateRepoName, current.Version)),
+		Accounts:   acc,
+		Providers:  registry,
+		Codex:      codexSvc,
+		Terminal:   launcher,
+		Executable: os.Executable,
+		mux:        http.NewServeMux(),
 	}
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/app", s.handleApp)
@@ -82,6 +92,7 @@ func New(database *db.DB, active func() config.Settings, current build.Info, acc
 	s.mux.HandleFunc("/api/accounts/{id}/codex/status", s.handleCodexStatus)
 	s.mux.HandleFunc("/api/accounts/{id}/codex/refresh", s.handleCodexRefresh)
 	s.mux.HandleFunc("/api/accounts/{id}/codex/logout", s.handleCodexLogout)
+	s.mux.HandleFunc("/api/accounts/{id}/codex/launch", s.handleCodexLaunch)
 	s.mux.HandleFunc("/", s.handleUI)
 	return s
 }
