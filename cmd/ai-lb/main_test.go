@@ -1,18 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"bytes"
 	"github.com/dustincorder/ai-lb/internal/accounts"
 	"github.com/dustincorder/ai-lb/internal/launcher"
 	"github.com/dustincorder/ai-lb/internal/providers"
@@ -196,4 +199,152 @@ type accountErrorStore struct{ err error }
 
 func (s accountErrorStore) Get(context.Context, string) (accounts.Account, error) {
 	return accounts.Account{}, s.err
+}
+
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func testFreePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+func TestCLIVersionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runWithIO(context.Background(), []string{"--version"}, &bytes.Buffer{}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run --version: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "ai-lb") || !strings.Contains(out, "commit:") || !strings.Contains(out, "channel:") {
+		t.Errorf("unexpected version output: %q", out)
+	}
+	if stderr.String() != "" {
+		t.Errorf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestCLIFatalErrorVisibleEvenWithQuiet(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runWithIO(context.Background(), []string{"--quiet", "--invalid-flag-that-does-not-exist"}, &bytes.Buffer{}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error on invalid flag")
+	}
+	if !strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Errorf("stderr missing flag error: %q", stderr.String())
+	}
+}
+
+func TestCLILifecyclePresentation(t *testing.T) {
+	dir := t.TempDir()
+	cPort := testFreePort(t)
+	gPort := testFreePort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr safeBuffer
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithIO(ctx, []string{
+			"--data-dir", dir,
+			"--control-port", fmt.Sprintf("%d", cPort),
+			"--gateway-port", fmt.Sprintf("%d", gPort),
+		}, &bytes.Buffer{}, &stdout, &stderr)
+	}()
+
+	// Wait for stderr to receive Ready presentation
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(stderr.String(), "Ready.") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("service returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("service did not stop cleanly")
+	}
+
+	if stdout.String() != "" {
+		t.Errorf("stdout should remain clean for scriptability, got: %q", stdout.String())
+	}
+
+	out := stderr.String()
+	for _, expected := range []string{
+		"ai-lb",
+		fmt.Sprintf("http://127.0.0.1:%d", cPort),
+		fmt.Sprintf("http://127.0.0.1:%d", gPort),
+		dir,
+		"Database   ready",
+		"Ready.",
+		"Shutting down...",
+		"Stopped.",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Errorf("stderr missing %q, got:\n%s", expected, out)
+		}
+	}
+}
+
+func TestCLILifecycleQuiet(t *testing.T) {
+	dir := t.TempDir()
+	cPort := testFreePort(t)
+	gPort := testFreePort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithIO(ctx, []string{
+			"--data-dir", dir,
+			"--control-port", fmt.Sprintf("%d", cPort),
+			"--gateway-port", fmt.Sprintf("%d", gPort),
+			"--quiet",
+		}, &bytes.Buffer{}, &stdout, &stderr)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("service returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("service did not stop cleanly")
+	}
+
+	if stdout.String() != "" {
+		t.Errorf("stdout should be empty, got: %q", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Errorf("quiet mode should have empty stderr, got: %q", stderr.String())
+	}
 }

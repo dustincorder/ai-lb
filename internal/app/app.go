@@ -42,7 +42,11 @@ type App struct {
 //
 // The active settings for this run are the persisted settings with CLI
 // overrides applied in memory. Overrides never rewrite SQLite.
-func Run(ctx context.Context, dataDir string, overrides config.Overrides) error {
+func Run(ctx context.Context, dataDir string, overrides config.Overrides, reporters ...Reporter) error {
+	var reporter Reporter
+	if len(reporters) > 0 {
+		reporter = reporters[0]
+	}
 	database, err := db.Open(dataDir)
 	if err != nil {
 		return fmt.Errorf("database: %w", err)
@@ -104,6 +108,16 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	if reporter != nil {
+		reporter.Ready(ReadyInfo{
+			Build:      build.Current(),
+			ControlURL: "http://" + config.Addr(settings.ControlHost, settings.ControlPort),
+			GatewayURL: "http://" + config.Addr(settings.GatewayHost, settings.GatewayPort),
+			DataDir:    filepath.Dir(database.Path),
+			Database:   database.Path,
+			Codex:      codex.Detect(context.Background()),
+		})
+	}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- a.control.Serve(controlListener) }()
@@ -116,6 +130,9 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 
 	select {
 	case <-ctx.Done():
+		if reporter != nil {
+			reporter.ShuttingDown()
+		}
 	case err := <-errCh:
 		// A server failed on its own; drain the other one and report.
 		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -132,7 +149,11 @@ func Run(ctx context.Context, dataDir string, overrides config.Overrides) error 
 	_ = a.control.Shutdown(shutCtx)
 	_ = a.gateway.Shutdown(shutCtx)
 	a.controlRoutes.Codex.Close()
-	return database.Close()
+	err = database.Close()
+	if reporter != nil {
+		reporter.Stopped()
+	}
+	return err
 }
 
 // resolveCodexBinary locates the Codex CLI once at startup. Empty means

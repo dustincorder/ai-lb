@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -37,10 +38,17 @@ func main() {
 }
 
 func run(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runWithIO(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "codex" {
 		return runCodexCommand(args[1:])
 	}
 	fs := flag.NewFlagSet("ai-lb", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var (
 		dataDir     = fs.String("data-dir", "", "data directory (default: OS app data dir)")
 		controlHost = fs.String("control-host", "", "control bind host, loopback only (default from settings)")
@@ -48,13 +56,14 @@ func run(args []string) error {
 		gatewayHost = fs.String("gateway-host", "", "gateway bind host, loopback only (default from settings)")
 		gatewayPort = fs.Int("gateway-port", 0, "gateway bind port (default from settings)")
 		showVersion = fs.Bool("version", false, "print build information and exit")
+		quiet       = fs.Bool("quiet", false, "suppress normal service lifecycle output")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *showVersion {
 		b := build.Current()
-		fmt.Printf("ai-lb %s\ncommit: %s\nchannel: %s\n", b.Version, b.Commit, b.Channel)
+		fmt.Fprintf(stdout, "ai-lb %s\ncommit: %s\nchannel: %s\n", b.Version, b.Commit, b.Channel)
 		return nil
 	}
 
@@ -75,10 +84,7 @@ func run(args []string) error {
 		overrides.GatewayPort = gatewayPort
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	return app.Run(ctx, *dataDir, overrides)
+	return app.Run(ctx, *dataDir, overrides, app.NewConsoleReporter(stderr, *quiet))
 }
 
 func runCodexCommand(args []string) error {

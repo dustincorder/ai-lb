@@ -1,73 +1,93 @@
 import { useEffect, useState } from 'react'
 import {
   cancelCodexLogin,
+  deleteAccount,
   fetchCodexLogin,
   fetchCodexStatus,
-  logoutCodex,
   launchCodex,
+  logoutCodex,
   refreshCodexQuota,
   startCodexLogin,
+  updateAccount,
   type Account,
   type CodexLogin,
-  type CodexQuotaWindow,
+  type CodexQuota,
   type CodexStatus,
 } from './api'
+import { Alert, Badge, Button, Card, Modal, ProgressBar } from './components'
 
-function windowLabel(w: CodexQuotaWindow): string {
-  if (w.limit_name) return w.limit_name
-  if (w.window_duration_minutes) {
-    const mins = w.window_duration_minutes
-    if (mins >= 1440 && mins % 1440 === 0) {
-      const days = mins / 1440
-      return `${days} day window`
-    }
-    if (mins >= 60 && mins % 60 === 0) return `${mins / 60} hour window`
-    return `${mins} min window`
-  }
-  return w.limit_id || 'Usage window'
+function resetLabel(value?: number) {
+  if (!value) return null
+  const date = new Date(value * 1000)
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatReset(resetAt?: number): string | null {
-  if (resetAt === undefined || resetAt === null) return null
-  const d = new Date(resetAt * 1000)
-  if (Number.isNaN(d.getTime())) return null
-  return d.toLocaleString()
-}
-
-function QuotaView({ quota }: { quota: NonNullable<CodexStatus['quota']> }) {
+function QuotaView({ quota }: { quota: CodexQuota }) {
   return (
-    <div>
-      <h4>Quota{quota.stale ? ' (stale)' : ''}</h4>
-      {quota.windows.length === 0 && <p>No quota windows reported.</p>}
-      <ul>
-        {quota.windows.map((w, i) => (
-          <li key={`${w.limit_id || 'window'}-${i}`}>
-            <span>{windowLabel(w)}</span>
-            {w.used_percent !== undefined && <span> — used {w.used_percent}%</span>}
-            {w.remaining_percent !== undefined && <span>, remaining {w.remaining_percent}%</span>}
-            {formatReset(w.reset_at) && <span>, resets {formatReset(w.reset_at)}</span>}
-          </li>
-        ))}
-      </ul>
+    <div className="quota-list">
+      {quota.windows.length === 0 && <p className="metric-detail">No quota windows reported.</p>}
+      {quota.windows.map((window, index) => {
+        const remaining =
+          window.remaining_percent ??
+          (window.used_percent !== undefined ? 100 - window.used_percent : 0)
+        return (
+          <div key={`${window.limit_id || 'window'}-${index}`}>
+            <div className="quota-name">
+              <span>
+                {window.limit_name ||
+                  window.limit_id ||
+                  `${window.window_duration_minutes || ''} minute window`}
+              </span>
+              <strong>{remaining}% remaining</strong>
+            </div>
+            <ProgressBar value={remaining} label={`${remaining}% remaining`} />
+            <div className="metric-detail">
+              {window.used_percent !== undefined && <span>used {window.used_percent}%</span>}
+              {window.remaining_percent !== undefined && (
+                <span> · remaining {window.remaining_percent}%</span>
+              )}
+              {resetLabel(window.reset_at) && <span> · resets {resetLabel(window.reset_at)}</span>}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-export function CodexAccount({ account, onChanged }: { account: Account; onChanged: () => void }) {
+export function CodexAccount({
+  account,
+  onChanged,
+}: {
+  account: Account
+  onChanged: () => void
+}) {
+  const [accountState, setAccountState] = useState(account)
   const [status, setStatus] = useState<CodexStatus | null>(null)
   const [login, setLogin] = useState<CodexLogin | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [workingDir, setWorkingDir] = useState('')
-  const [launched, setLaunched] = useState(false)
+  const [launchSuccess, setLaunchSuccess] = useState(false)
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editLabel, setEditLabel] = useState(account.label)
+  const [editIdentity, setEditIdentity] = useState(account.identity)
+
+  useEffect(() => {
+    setAccountState(account)
+    setEditLabel(account.label)
+    setEditIdentity(account.identity)
+  }, [account])
 
   useEffect(() => {
     let cancelled = false
-    fetchCodexStatus(account.id)
-      .then((s) => {
-        if (!cancelled) setStatus(s)
+    fetchCodexStatus(accountState.id)
+      .then((value) => {
+        if (!cancelled) setStatus(value)
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message)
@@ -75,92 +95,47 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
     return () => {
       cancelled = true
     }
-  }, [account.id])
+  }, [accountState.id])
 
   const waiting = login !== null && (login.state === 'waiting' || login.state === 'idle')
 
   useEffect(() => {
     if (!waiting || !login) return
     const timer = setInterval(() => {
-      fetchCodexLogin(account.id)
-        .then((s) => {
-          setLogin(s)
-          if (s.state === 'succeeded') {
-            fetchCodexStatus(account.id)
+      fetchCodexLogin(accountState.id)
+        .then((next) => {
+          setLogin(next)
+          if (next.state === 'succeeded') {
+            fetchCodexStatus(accountState.id)
               .then(setStatus)
-              .catch((e: Error) => setError(e.message))
+              .catch(() => undefined)
             onChanged()
           }
         })
         .catch((e: Error) => setError(e.message))
     }, 2000)
     return () => clearInterval(timer)
-  }, [waiting, login, account.id, onChanged])
+  }, [waiting, login, accountState.id, onChanged])
 
-  async function onStart(method: 'browser' | 'device') {
+  async function connect(method: 'browser' | 'device') {
     setError(null)
     setBusy(true)
     try {
-      setLogin(await startCodexLogin(account.id, method))
+      setLogin(await startCodexLogin(accountState.id, method))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Login failed to start.')
+      setError(e instanceof Error ? e.message : 'Login failed.')
     } finally {
       setBusy(false)
     }
   }
 
-  async function onCancel() {
+  async function launch() {
     setError(null)
-    try {
-      const s = await cancelCodexLogin(account.id, login?.login_id)
-      setLogin(s)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Cancel failed.')
-    }
-  }
-
-  async function onRefresh() {
-    setError(null)
+    setLaunchSuccess(false)
     setBusy(true)
     try {
-      const quota = await refreshCodexQuota(account.id)
-      setStatus((prev) => (prev ? { ...prev, quota } : prev))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Refresh failed.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function onDisconnect() {
-    setError(null)
-    try {
-      await logoutCodex(account.id)
-      setStatus((prev) => (prev ? { ...prev, connected: false, quota: undefined } : prev))
-      setConfirmDisconnect(false)
-      onChanged()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Disconnect failed.')
-    }
-  }
-
-  async function onCopyCode() {
-    if (!login?.user_code) return
-    try {
-      await navigator.clipboard.writeText(login.user_code)
-      setCopied(true)
-    } catch {
-      setCopied(false)
-    }
-  }
-
-  async function onLaunch() {
-    setError(null)
-    setLaunched(false)
-    setBusy(true)
-    try {
-      await launchCodex(account.id, workingDir)
-      setLaunched(true)
+      await launchCodex(accountState.id, workingDir)
+      setLaunchSuccess(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to launch Codex CLI.')
     } finally {
@@ -168,89 +143,274 @@ export function CodexAccount({ account, onChanged }: { account: Account; onChang
     }
   }
 
+  async function refresh() {
+    setError(null)
+    setBusy(true)
+    try {
+      const quota = await refreshCodexQuota(accountState.id)
+      setStatus((previous) => (previous ? { ...previous, quota } : previous))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Refresh failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function disconnect() {
+    setError(null)
+    try {
+      await logoutCodex(accountState.id)
+      setStatus((previous) =>
+        previous ? { ...previous, connected: false, quota: undefined } : previous,
+      )
+      setConfirmDisconnect(false)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Disconnect failed.')
+    }
+  }
+
+  async function onToggle() {
+    setError(null)
+    try {
+      const updated = await updateAccount(accountState.id, { enabled: !accountState.enabled })
+      setAccountState(updated)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Update failed.')
+    }
+  }
+
+  async function onSaveEdit() {
+    setError(null)
+    try {
+      const updated = await updateAccount(accountState.id, {
+        label: editLabel,
+        identity: editIdentity,
+      })
+      setAccountState(updated)
+      setEditing(false)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed.')
+    }
+  }
+
+  async function onDelete() {
+    setError(null)
+    try {
+      await deleteAccount(accountState.id)
+      setConfirmDelete(false)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed.')
+    }
+  }
+
+  const isConnected = status !== null ? status.connected : accountState.connected
+  const displayIdentity = status?.email || accountState.identity
+
   return (
-    <div>
-      {error && <p role="alert">{error}</p>}
+    <Card className="account-card">
+      <div className="account-head">
+        <div>
+          <div className="account-provider">
+            Codex <span className="account-provider-tag">(Codex)</span>
+          </div>
+          <div className="account-name">{accountState.label}</div>
+          {displayIdentity && <div className="account-identity">{displayIdentity}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <Badge tone={accountState.enabled ? 'success' : 'neutral'}>
+            {accountState.enabled ? 'Enabled' : 'Disabled'}
+          </Badge>
+          <Badge tone={isConnected ? 'success' : 'neutral'}>
+            {isConnected ? 'Connected' : 'Not connected'}
+          </Badge>
+        </div>
+      </div>
+
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      {!status && !error && (
+        <div className="loading-block">
+          <span className="spinner-wrap" role="status">
+            <span className="spinner" />
+            Loading account status...
+          </span>
+        </div>
+      )}
+
+      {!isConnected && !waiting && (
+        <div className="account-actions">
+          <Button onClick={() => void connect('browser')} disabled={busy}>
+            Connect with ChatGPT
+          </Button>
+          <Button variant="secondary" onClick={() => void connect('device')} disabled={busy}>
+            Use device code
+          </Button>
+          <Button variant="secondary" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          <Button variant="secondary" onClick={() => void onToggle()}>
+            {accountState.enabled ? 'Disable' : 'Enable'}
+          </Button>
+          <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+            Delete
+          </Button>
+        </div>
+      )}
 
       {waiting && login && (
-        <div>
-          {login.method === 'device' ? (
-            <div>
-              <p>Open:</p>
-              <p>{login.verification_url}</p>
-              <p>
-                Code: <strong>{login.user_code}</strong>
-              </p>
-              <button type="button" onClick={() => void onCopyCode()}>
+        <Card>
+          <h3>{login.method === 'device' ? 'Enter this code' : 'Waiting for ChatGPT sign-in'}</h3>
+          {login.method !== 'device' && <p>Waiting for sign-in…</p>}
+          {login.user_code && (
+            <>
+              <p className="technical">{login.user_code}</p>
+              <Button
+                variant="secondary"
+                onClick={() => void navigator.clipboard?.writeText(login.user_code || '')}
+              >
                 Copy code
-              </button>
-              {copied && <span> Copied.</span>}
-            </div>
-          ) : (
+              </Button>
+            </>
+          )}
+          {login.verification_url && <p className="technical">{login.verification_url}</p>}
+          {login.auth_url && (
+            <a href={login.auth_url} target="_blank" rel="noreferrer">
+              Open sign-in page
+            </a>
+          )}
+          <div className="account-actions section">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                void cancelCodexLogin(accountState.id, login.login_id).then(setLogin)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {!waiting && login?.error && <Alert tone="danger">{login.error}</Alert>}
+
+      {isConnected && (
+        <>
+          <div className="status-line">
+            <span className="metric-detail">Plan</span>
+            <strong>Plan: {status?.plan_type || 'ChatGPT account'}</strong>
+          </div>
+          {status?.quota && (
             <div>
-              <p>Waiting for sign-in…</p>
-              {login.auth_url && (
-                <a href={login.auth_url} target="_blank" rel="noreferrer">
-                  Open sign-in page
-                </a>
-              )}
+              <div className="section-title">
+                <h3>Quota{status.quota.stale ? ' (stale)' : ''}</h3>
+                {status.quota.stale && <Badge tone="warning">Stale</Badge>}
+              </div>
+              <QuotaView quota={status.quota} />
             </div>
           )}
-          <button type="button" onClick={() => void onCancel()}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {!waiting && status !== null && !status.connected && (
-        <div>
-          <p>Not connected</p>
-          {login !== null &&
-            (login.state === 'failed' || login.state === 'expired') &&
-            login.error && <p role="status">{login.error}</p>}
-          <button type="button" onClick={() => void onStart('browser')} disabled={busy}>
-            Connect with ChatGPT
-          </button>{' '}
-          <button type="button" onClick={() => void onStart('device')} disabled={busy}>
-            Use device code
-          </button>
-        </div>
-      )}
-
-      {!waiting && status !== null && status.connected && (
-        <div>
-          <p>Connected</p>
-          {status.email && <p>{status.email}</p>}
-          {status.plan_type && <p>Plan: {status.plan_type}</p>}
-          <label>
-            Working directory (optional)
-            <input aria-label="Working directory" value={workingDir} onChange={(e) => setWorkingDir(e.target.value)} />
-          </label>{' '}
-          <button type="button" onClick={() => void onLaunch()} disabled={busy}>
-            Launch Codex CLI
-          </button>
-          {launched && <p role="status">Codex CLI launched.</p>}
-          {status.quota && <QuotaView quota={status.quota} />}
-          <button type="button" onClick={() => void onRefresh()} disabled={busy}>
-            Refresh
-          </button>{' '}
-          {confirmDisconnect ? (
-            <span>
-              Disconnect this account?{' '}
-              <button type="button" onClick={() => void onDisconnect()}>
-                Confirm disconnect
-              </button>{' '}
-              <button type="button" onClick={() => setConfirmDisconnect(false)}>
-                Cancel
-              </button>
-            </span>
-          ) : (
-            <button type="button" onClick={() => setConfirmDisconnect(true)}>
+          <div className="field">
+            <label htmlFor={`working-dir-${accountState.id}`}>Working directory</label>
+            <input
+              id={`working-dir-${accountState.id}`}
+              aria-label="Working directory"
+              value={workingDir}
+              onChange={(e) => setWorkingDir(e.target.value)}
+              placeholder="Home directory"
+            />
+            <p className="helper">Leave empty to start in your home directory.</p>
+          </div>
+          <div className="account-actions">
+            <Button onClick={() => void launch()} disabled={busy}>
+              {busy ? 'Launching...' : 'Launch Codex CLI'}
+            </Button>
+            <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
+              Refresh
+            </Button>
+            <Button variant="secondary" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+            <Button variant="secondary" onClick={() => void onToggle()}>
+              {accountState.enabled ? 'Disable' : 'Enable'}
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirmDisconnect(true)}>
               Disconnect
-            </button>
-          )}
-        </div>
+            </Button>
+            <Button variant="danger" onClick={() => setConfirmDelete(true)}>
+              Delete
+            </Button>
+          </div>
+          {launchSuccess && <Alert tone="success">Codex CLI launched.</Alert>}
+        </>
       )}
-    </div>
+
+      {confirmDisconnect && (
+        <Modal title="Disconnect account?" onClose={() => setConfirmDisconnect(false)}>
+          <p>
+            This removes the connection from this local profile. The provider account itself is not
+            changed.
+          </p>
+          <div className="modal-actions">
+            <Button variant="secondary" onClick={() => setConfirmDisconnect(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={() => void disconnect()}>
+              Confirm disconnect
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {confirmDelete && (
+        <Modal title="Delete account?" onClose={() => setConfirmDelete(false)}>
+          <p>
+            This deletes the local profile. Connected provider credentials are handled by the provider
+            flow.
+          </p>
+          <div className="modal-actions">
+            <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={() => void onDelete()}>
+              Confirm delete
+            </Button>
+          </div>
+        </Modal>
+      )}
+
+      {editing && (
+        <Modal title="Edit account" onClose={() => setEditing(false)}>
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor={`edit-label-${accountState.id}`}>Label</label>
+              <input
+                id={`edit-label-${accountState.id}`}
+                aria-label="Edit label"
+                value={editLabel}
+                onChange={(e) => setEditLabel(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor={`edit-identity-${accountState.id}`}>Identity (optional)</label>
+              <input
+                id={`edit-identity-${accountState.id}`}
+                aria-label="Edit identity"
+                value={editIdentity}
+                onChange={(e) => setEditIdentity(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="modal-actions">
+            <Button variant="secondary" onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void onSaveEdit()}>Save</Button>
+          </div>
+        </Modal>
+      )}
+    </Card>
   )
 }
