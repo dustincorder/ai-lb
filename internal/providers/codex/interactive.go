@@ -26,7 +26,7 @@ func InteractiveEnvForLauncher(codexHome string) []string {
 	for _, kv := range os.Environ() {
 		key, _, ok := strings.Cut(kv, "=")
 		if ok {
-			if _, blocked := launcherEnvBlocked[key]; blocked {
+			if _, blocked := launcherEnvBlocked[strings.ToUpper(key)]; blocked {
 				continue
 			}
 			out = append(out, kv)
